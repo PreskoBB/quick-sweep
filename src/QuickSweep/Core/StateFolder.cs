@@ -20,7 +20,8 @@ public static class StateFolder
 
     /// <summary>Rights that let an account change what the elevated process will later read or write.</summary>
     const FileSystemRights WriteLike = FileSystemRights.Write | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles
-        | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership
+        | (FileSystemRights)0x50000000;   // GENERIC_WRITE and GENERIC_ALL: entries that children inherit are stored with generic rights
 
     public static bool IsTrusted(SecurityIdentifier? sid, IEnumerable<SecurityIdentifier>? extra = null)
         => sid != null && (sid == SystemSid || sid == AdminsSid || sid == TrustedInstallerSid || (extra?.Contains(sid) ?? false));

@@ -1,13 +1,13 @@
 <#
  Packs the release zip from an already published .\dist (run build.ps1 first):
 
-   QuickSweep-1.0.1.zip
+   QuickSweep-1.0.2.zip
      Install Quick Sweep.bat   double-click: asks for admin, then runs install.ps1
      install.ps1  uninstall.ps1
      README.txt  LICENSE  THIRD-PARTY-NOTICES.md  licenses\
      app\                  the published program
 
-   .\tools\package.ps1 -Version 1.0.1
+   .\tools\package.ps1 -Version 1.0.2
 #>
 [CmdletBinding()]
 param(
@@ -23,7 +23,7 @@ $stage = Join-Path $OutDir $name
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force (Join-Path $stage 'app') | Out-Null
 Copy-Item (Join-Path $Dist '*') (Join-Path $stage 'app') -Recurse
-foreach ($f in 'Install Quick Sweep.bat', 'install.ps1', 'uninstall.ps1', 'LICENSE', 'THIRD-PARTY-NOTICES.md') { Copy-Item (Join-Path $root $f) $stage }
+foreach ($f in 'Install Quick Sweep.bat', 'install.ps1', 'uninstall.ps1', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG.md') { Copy-Item (Join-Path $root $f) $stage }
 Copy-Item (Join-Path $root 'licenses') (Join-Path $stage 'licenses') -Recurse
 @"
 Quick Sweep $Version

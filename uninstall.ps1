@@ -14,12 +14,42 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-# The environment of an elevated process contains the user's own variables (HKCU\Environment), which any normal program can change.
-# Nothing below trusts them: locations come from Windows' known folders, native tools are found in System32 only, PowerShell modules
-# load from the system folders only (the same rules as install.ps1).
-$sysDir = [Environment]::SystemDirectory
-$env:Path = @($sysDir, (Split-Path $sysDir -Parent), (Join-Path $sysDir 'Wbem'), (Join-Path $sysDir 'WindowsPowerShell\v1.0')) -join ';'
-$env:PSModulePath = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'WindowsPowerShell\Modules') + ';' + (Join-Path $sysDir 'WindowsPowerShell\v1.0\Modules')
+# Started from PowerShell 7 (pwsh)? This script is written for Windows PowerShell 5.1, the one "Install Quick Sweep.bat" uses (the
+# ScheduledTasks and Appx modules it needs are Windows PowerShell modules): run it again in 5.1, from its system folder, same arguments.
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    $ps51 = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $forward = @()
+    foreach ($k in $PSBoundParameters.Keys) {
+        $v = $PSBoundParameters[$k]
+        if ($v -is [switch]) { if ($v.IsPresent) { $forward += "-$k" } } else { $forward += "-$k"; $forward += [string]$v }
+    }
+    & $ps51 -NoProfile -ExecutionPolicy Bypass -File $MyInvocation.MyCommand.Path @forward
+    exit $LASTEXITCODE
+}
+
+# The environment of an elevated process contains the user's own variables (HKCU\Environment), which any normal program can change:
+# ProgramFiles, ProgramData, PATH, PSModulePath... Nothing below trusts them. Locations come from Windows' known folders
+# (SHGetKnownFolderPath, GetSystemDirectory), native tools are found in System32 only, and PowerShell modules load from the
+# system folders only, so a variable set by a user-level program cannot point this elevated script at a folder or program it controls.
+function Set-SafeEnvironment {
+    $sys = [Environment]::SystemDirectory
+    $env:Path = @($sys, (Split-Path $sys -Parent), (Join-Path $sys 'Wbem'), (Join-Path $sys 'WindowsPowerShell\v1.0')) -join ';'
+    $env:PSModulePath = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'WindowsPowerShell\Modules') + ';' + (Join-Path $sys 'WindowsPowerShell\v1.0\Modules')
+}
+
+# Imports modules by the full path of their manifest in the Windows PowerShell system folder, so nothing depends on how PSModulePath was
+# inherited (a PowerShell 7 window that starts this one hands over its own module path, and autoloading would then find PowerShell 7's
+# incompatible copies first: "the module could not be loaded").
+function Import-SystemModules([string[]]$Names, [switch]$Optional) {
+    $root = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\Modules'
+    foreach ($n in $Names) {
+        $manifest = Join-Path (Join-Path $root $n) "$n.psd1"
+        try { Import-Module -Name $manifest -Force -DisableNameChecking -ErrorAction Stop }
+        catch { if (-not $Optional) { throw "Cannot load the PowerShell module $n from $manifest : $_" } }
+    }
+}
+
+Set-SafeEnvironment
 
 function Get-KnownLocations {
     @{
@@ -51,6 +81,9 @@ function Get-WingetPath($programFiles) {
     } catch { }
     return $null
 }
+
+Import-SystemModules @('ScheduledTasks')
+Import-SystemModules @('Appx') -Optional      # only used to find winget (to remove PawnIO)
 
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {

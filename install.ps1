@@ -34,13 +34,42 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# Started from PowerShell 7 (pwsh)? This script is written for Windows PowerShell 5.1, the one "Install Quick Sweep.bat" uses (the
+# ScheduledTasks and Appx modules it needs are Windows PowerShell modules): run it again in 5.1, from its system folder, same arguments.
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    $ps51 = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $forward = @()
+    foreach ($k in $PSBoundParameters.Keys) {
+        $v = $PSBoundParameters[$k]
+        if ($v -is [switch]) { if ($v.IsPresent) { $forward += "-$k" } } else { $forward += "-$k"; $forward += [string]$v }
+    }
+    & $ps51 -NoProfile -ExecutionPolicy Bypass -File $MyInvocation.MyCommand.Path @forward
+    exit $LASTEXITCODE
+}
+
 # The environment of an elevated process contains the user's own variables (HKCU\Environment), which any normal program can change:
 # ProgramFiles, ProgramData, PATH, PSModulePath... Nothing below trusts them. Locations come from Windows' known folders
 # (SHGetKnownFolderPath, GetSystemDirectory), native tools are found in System32 only, and PowerShell modules load from the
 # system folders only, so a variable set by a user-level program cannot point this elevated script at a folder or program it controls.
-$sysDir = [Environment]::SystemDirectory
-$env:Path = @($sysDir, (Split-Path $sysDir -Parent), (Join-Path $sysDir 'Wbem'), (Join-Path $sysDir 'WindowsPowerShell\v1.0')) -join ';'
-$env:PSModulePath = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'WindowsPowerShell\Modules') + ';' + (Join-Path $sysDir 'WindowsPowerShell\v1.0\Modules')
+function Set-SafeEnvironment {
+    $sys = [Environment]::SystemDirectory
+    $env:Path = @($sys, (Split-Path $sys -Parent), (Join-Path $sys 'Wbem'), (Join-Path $sys 'WindowsPowerShell\v1.0')) -join ';'
+    $env:PSModulePath = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'WindowsPowerShell\Modules') + ';' + (Join-Path $sys 'WindowsPowerShell\v1.0\Modules')
+}
+
+# Imports modules by the full path of their manifest in the Windows PowerShell system folder, so nothing depends on how PSModulePath was
+# inherited (a PowerShell 7 window that starts this one hands over its own module path, and autoloading would then find PowerShell 7's
+# incompatible copies first: "the module could not be loaded").
+function Import-SystemModules([string[]]$Names, [switch]$Optional) {
+    $root = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\Modules'
+    foreach ($n in $Names) {
+        $manifest = Join-Path (Join-Path $root $n) "$n.psd1"
+        try { Import-Module -Name $manifest -Force -DisableNameChecking -ErrorAction Stop }
+        catch { if (-not $Optional) { throw "Cannot load the PowerShell module $n from $manifest : $_" } }
+    }
+}
+
+Set-SafeEnvironment
 
 function Get-KnownLocations {
     @{
@@ -72,6 +101,9 @@ function Get-WingetPath($programFiles) {
     } catch { }
     return $null
 }
+
+Import-SystemModules @('Microsoft.PowerShell.Security', 'ScheduledTasks')
+Import-SystemModules @('Appx') -Optional      # only used to find winget; without it the installer says so and the steps that need winget are skipped
 
 # Windows PowerShell 5.1 leaves $PSScriptRoot empty in param defaults, so resolve the folder here.
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -109,27 +141,75 @@ $oldUserDir = Join-Path (Join-Path $loc.UserProfile 'AppData\Local') 'PcCare'
 
 function Test-Link($p) { [bool]((Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue).Attributes -band [IO.FileAttributes]::ReparsePoint) }
 
+function Get-AdminSids { @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') }
+
+# Allow-entries of an ACL that give somebody other than SYSTEM, Administrators and TrustedInstaller a way to write, delete, re-permission
+# or take ownership of what is in the folder, INCLUDING entries that only children inherit (a user who is granted "modify, inherited by new
+# files" can change everything copied there afterwards). The only entries excused are CREATOR OWNER and CREATOR GROUP when they are
+# inherit-only: they are placeholders that become the owner or group of a future child, and a child created by an administrator is owned by one.
+# GENERIC_WRITE and GENERIC_ALL count as write-like too: inherit-only entries are stored with generic rights.
+function Get-UntrustedWriteAces($sec) {
+    $admin = Get-AdminSids
+    $writeLike = [int]([Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership') -bor 0x50000000
+    $inheritOnly = [Security.AccessControl.PropagationFlags]::InheritOnly
+    foreach ($r in $sec.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($r.AccessControlType -ne 'Allow') { continue }
+        $sid = $r.IdentityReference.Value
+        if ($admin -contains $sid) { continue }
+        $onlyForChildren = [bool]($r.PropagationFlags -band $inheritOnly)
+        if (($sid -eq 'S-1-3-0' -or $sid -eq 'S-1-3-1') -and $onlyForChildren) { continue }
+        if (([int]$r.FileSystemRights -band $writeLike) -ne 0) { "$sid ($($r.FileSystemRights)$(if ($onlyForChildren) { ', inherited by new children' }))" }
+    }
+}
+
 # The trust test the app applies to its own state folder: not a link; owned by SYSTEM, Administrators or TrustedInstaller; nobody else
-# may write, delete or re-permission it; nothing directly inside is a link or belongs to somebody else.
+# may write, delete or re-permission it (or what will be created in it); nothing directly inside is a link or belongs to somebody else.
 function Test-TrustedStateFolder($dir) {
-    $adminSids = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    $admin = Get-AdminSids
     if (-not (Test-Path -LiteralPath $dir)) { return $false }
     if (Test-Link $dir) { Write-Warning "      $dir is a junction or symbolic link"; return $false }
     $sec = Get-Acl -LiteralPath $dir
     $owner = $sec.GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($adminSids -notcontains $owner) { Write-Warning "      $dir is owned by $owner, not by Administrators or SYSTEM"; return $false }
-    $writeLike = [int][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
-    foreach ($r in $sec.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-        if ($r.AccessControlType -ne 'Allow' -or $adminSids -contains $r.IdentityReference.Value) { continue }
-        if ($r.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) { continue }   # CREATOR OWNER and the like: not this folder
-        if (([int]$r.FileSystemRights -band $writeLike) -ne 0) { Write-Warning "      $dir lets $($r.IdentityReference.Value) change it ($($r.FileSystemRights))"; return $false }
-    }
+    if ($admin -notcontains $owner) { Write-Warning "      $dir is owned by $owner, not by Administrators or SYSTEM"; return $false }
+    $bad = @(Get-UntrustedWriteAces $sec)
+    if ($bad.Count -gt 0) { Write-Warning "      $dir lets $($bad -join '; ') change it"; return $false }
     foreach ($e in Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue) {
         if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { Write-Warning "      $($e.FullName) is a link"; return $false }
         $o = (Get-Acl -LiteralPath $e.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value
-        if ($adminSids -notcontains $o) { Write-Warning "      $($e.FullName) is owned by $o"; return $false }
+        if ($admin -notcontains $o) { Write-Warning "      $($e.FullName) is owned by $o"; return $false }
     }
     return $true
+}
+
+# The same test for everything below a folder, however deep (links are refused, never walked into): every file and folder must belong to an
+# administrative account and must not give anybody else write-like rights. Used on what was just copied.
+function Test-AdminOnlyTree($dir) {
+    $admin = Get-AdminSids
+    try {
+        $stack = New-Object System.Collections.Stack
+        $stack.Push($dir)
+        while ($stack.Count -gt 0) {
+            $d = $stack.Pop()
+            foreach ($e in Get-ChildItem -LiteralPath $d -Force -ErrorAction Stop) {
+                if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { Write-Warning "      $($e.FullName) is a link"; return $false }
+                $sec = Get-Acl -LiteralPath $e.FullName
+                $o = $sec.GetOwner([Security.Principal.SecurityIdentifier]).Value
+                if ($admin -notcontains $o) { Write-Warning "      $($e.FullName) is owned by $o"; return $false }
+                $bad = @(Get-UntrustedWriteAces $sec)
+                if ($bad.Count -gt 0) { Write-Warning "      $($e.FullName) lets $($bad -join '; ') change it"; return $false }
+                if ($e.PSIsContainer) { $stack.Push($e.FullName) }
+            }
+        }
+        return $true
+    } catch { Write-Warning "      could not check the permissions below ${dir}: $_"; return $false }
+}
+
+# Owner Administrators, inheritance removed, SYSTEM and Administrators full control, Users read and execute (inherited by what is inside).
+function Set-AdminOnlyAcl($dir) {
+    icacls $dir /setowner '*S-1-5-32-544' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls could not take ownership of $dir for Administrators" }
+    icacls $dir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls could not set the permissions of $dir" }
 }
 
 # Removes an admin-only folder; a link is removed as a link, never walked into.
@@ -182,8 +262,11 @@ if (-not (Test-UnderDirectory $exe $programFiles)) { throw "$exe is not below th
 New-Item -ItemType Directory -Force $installDir | Out-Null
 # the folder the elevated task will run from must be writable by administrators only: refuse otherwise (nothing has been copied yet)
 if (-not (Test-TrustedStateFolder $installDir)) { throw "$installDir is not an administrators-only folder (see the warning above), so Quick Sweep will not be installed into it." }
+Set-AdminOnlyAcl $installDir                       # explicit and protected before anything is copied in: what arrives inherits it
 robocopy $Source $installDir /MIR /NFL /NDL /NJH /NJS /NP /XF install-state.json | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with code $LASTEXITCODE" }
+icacls "$installDir\*" /reset /T /C | Out-Null      # every copied file and folder inherits SYSTEM + Administrators full, Users read and execute
+if (-not (Test-AdminOnlyTree $installDir)) { throw "What was copied to $installDir is not administrators-only (see the warnings above); the logon task was not changed." }
 # files from a downloaded zip carry the "downloaded from the internet" mark; the copy in Program Files should not
 Get-ChildItem $installDir -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 
@@ -221,10 +304,20 @@ if (Test-Path $dataDir) {
     }
 }
 New-Item -ItemType Directory -Force $dataDir | Out-Null
-icacls $dataDir /setowner '*S-1-5-32-544' | Out-Null
-icacls $dataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
+Set-AdminOnlyAcl $dataDir
 if (Get-ChildItem $dataDir -Force -ErrorAction SilentlyContinue) { icacls "$dataDir\*" /reset /T /C | Out-Null }
 New-Item -ItemType Directory -Force (Join-Path $dataDir 'public') | Out-Null
+if (-not ((Test-TrustedStateFolder $dataDir) -and (Test-AdminOnlyTree $dataDir))) {
+    # something inside belongs to a non-administrator, or is a link: the app would refuse this folder at every start. Keep it (nothing is
+    # deleted), set it aside, and start with a fresh folder.
+    $aside = "$dataDir.untrusted-$(Get-Date -Format yyyyMMddHHmmss)"
+    Rename-Item $dataDir $aside
+    Write-Warning "      $dataDir contained something that is not administrators-only (see the warnings above). It was renamed to $aside; a fresh folder is used."
+    New-Item -ItemType Directory -Force $dataDir | Out-Null
+    Set-AdminOnlyAcl $dataDir
+    New-Item -ItemType Directory -Force (Join-Path $dataDir 'public') | Out-Null
+    if (-not ((Test-TrustedStateFolder $dataDir) -and (Test-AdminOnlyTree $dataDir))) { throw "$dataDir is not administrators-only even when new; Quick Sweep will not use it." }
+}
 
 # --- settings from the earlier name: only from a folder that passes the same trust test, copies only, never over what exists ---------
 $oldFound = (Get-ScheduledTask -TaskName $oldTask -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $oldInstall) -or (Test-Path -LiteralPath $oldData) -or (Test-Path -LiteralPath $oldLnk)
@@ -245,6 +338,7 @@ if ($oldFound) {
             $copied++
         }
         icacls "$dataDir\*" /reset /T /C | Out-Null       # everything in the new folder inherits SYSTEM + Administrators full, users read-only
+        if (-not (Test-AdminOnlyTree $dataDir)) { throw "The files copied into $dataDir are not administrators-only (see the warnings above)." }
         Write-Host "      copied $copied file(s) into $dataDir"
     } elseif (Test-Path -LiteralPath $oldData) {
         Write-Warning "      $oldData did not pass the trust test, so nothing was taken from it and it is left where it is."
@@ -308,6 +402,7 @@ if ($ImportSettings) {
 
 # --- scheduled task ------------------------------------------------------------
 Write-Host '[4/5] Registering the logon task (hidden, highest privileges)...'
+if (-not ((Test-TrustedStateFolder $installDir) -and (Test-AdminOnlyTree $installDir))) { throw "$installDir is not administrators-only (see the warnings above); the logon task was not registered." }
 $action    = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $installDir
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $user
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest

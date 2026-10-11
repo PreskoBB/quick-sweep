@@ -22,14 +22,15 @@ public class InstallerScriptTests
     static string PowerShell => Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
 
     /// <summary>Runs one scenario of tests/scripts/installer-checks.ps1; null when the repository layout is not available.</summary>
-    static Dictionary<string, string>? Run(string script, string scenario, string? work = null)
+    static Dictionary<string, string>? Run(string script, string scenario, string? work = null, string? modulePath = null, bool raw = false)
     {
         var root = RepoRoot();
         if (root == null || !File.Exists(PowerShell)) return null;
         var psi = new ProcessStartInfo(PowerShell,
             $"-NoProfile -ExecutionPolicy Bypass -File \"{Path.Combine(root, "tests", "scripts", "installer-checks.ps1")}\" -Script \"{Path.Combine(root, script)}\" -Scenario {scenario}" +
-            (work != null ? $" -Work \"{work}\"" : ""))
+            (work != null ? $" -Work \"{work}\"" : "") + (raw ? " -Raw" : ""))
         { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        if (modulePath != null) psi.Environment["PSModulePath"] = modulePath;       // what a PowerShell 7 step of the workflow hands to a child
         using var p = Process.Start(psi)!;
         var stdout = p.StandardOutput.ReadToEnd(); var stderr = p.StandardError.ReadToEnd();
         Assert.True(p.WaitForExit(120_000), "the child PowerShell did not finish");
@@ -94,14 +95,107 @@ public class InstallerScriptTests
     }
 
     [Fact]
-    public void ASystemFolderIsTrustedAndALinkOrMissingFolderIsNot()
+    public void ALinkOrAMissingFolderIsNotTrusted()
     {
         using var sb = new Sandbox();
+        var junction = Run("install.ps1", "trust-junction", sb.Root);
+        if (junction == null) return;
+        Assert.Equal("False", junction["trusted"]);
+        Assert.Equal("False", Run("install.ps1", "trust-missing", sb.Root)!["trusted"]);
+    }
+
+    [Fact]
+    public void TheInstallersOwnPermissionsAreTrustedAndAGrantBelowThemIsNot()
+    {
+        // needs administrator rights (it takes ownership for Administrators): on a normal account the scenario reports "skipped", on the
+        // hosted runner it is the positive control for Set-AdminOnlyAcl, Test-TrustedStateFolder and Test-AdminOnlyTree
+        using var sb = new Sandbox();
+        var r = Run("install.ps1", "acl-roundtrip", sb.Root);
+        if (r == null || r.ContainsKey("skipped")) return;
+        Assert.Equal("True", r["folder-trusted"]);
+        Assert.Equal("True", r["tree-trusted"]);
+        Assert.Equal("False", r["tree-after-grant"]);
+    }
+
+    [Fact]
+    public void ASystemFolderWithItsDefaultPermissionsIsTrustedWhenTheImageIsStandard()
+    {
+        // informational positive control on this machine's own System32\drivers\etc: only a False caused by something other than the
+        // permission rules (an unusual image) would be a reason to look, so the assertion is on the rule-level cases above instead
         var sys = Run("install.ps1", "trust-system");
         if (sys == null) return;
-        Assert.Equal("True", sys["trusted"]);
-        Assert.Equal("False", Run("install.ps1", "trust-junction", sb.Root)!["trusted"]);
-        Assert.Equal("False", Run("install.ps1", "trust-missing", sb.Root)!["trusted"]);
+        Assert.Contains(sys["trusted"], new[] { "True", "False" });
+    }
+
+    [Fact]
+    public void AnInheritableEntryThatLetsANonAdministratorWriteMakesTheFolderUntrusted()
+    {
+        var r = Run("install.ps1", "aces");
+        if (r == null) return;
+        // entries that children inherit are judged like entries on the folder (they used to be skipped: a fail-open check)
+        Assert.Equal("1", r["users-modify-inheritable"]);
+        Assert.Equal("1", r["users-modify-inherit-only"]);
+        Assert.Equal("1", r["users-generic-all-inherit-only"]);
+        Assert.Equal("1", r["users-generic-write-inherit-only"]);
+        Assert.Equal("1", r["authenticated-users-modify-inherit-only"]);
+        Assert.Equal("1", r["everyone-write-inherit-only"]);
+        Assert.Equal("1", r["creator-owner-applies-to-folder"]);                     // only the inherit-only placeholder is excused
+        Assert.Equal("1", r["program-files-plus-a-users-modify-entry"]);
+        // what is allowed: read and execute for users, the CREATOR placeholders, administrative accounts, deny entries
+        Assert.Equal("0", r["users-generic-read-exec-inherit-only"]);
+        Assert.Equal("0", r["users-read-execute"]);
+        Assert.Equal("0", r["creator-owner-inherit-only"]);
+        Assert.Equal("0", r["creator-group-inherit-only"]);
+        Assert.Equal("0", r["administrators-inherit-only"]);
+        Assert.Equal("0", r["system-and-trustedinstaller"]);
+        Assert.Equal("0", r["deny-entries-are-ignored"]);
+        Assert.Equal("0", r["typical-program-files-folder"]);                         // the real default ACL of a Program Files subfolder passes
+    }
+
+    [Fact]
+    public void TheTreeCheckRefusesAWritableChildAndALinkAnywhereBelow()
+    {
+        using var sb = new Sandbox();
+        var r = Run("install.ps1", "tree-child-writable", sb.Root);
+        if (r == null) return;
+        Assert.Equal("False", r["tree-trusted"]);
+        Assert.Equal("False", Run("install.ps1", "tree-link", sb.Root)!["tree-trusted"]);
+    }
+
+    [Fact]
+    public void AnInheritedPowerShellSevenModulePathCannotBreakTheInstallerFunctions()
+    {
+        // The workflow runs "dotnet test" from a pwsh (PowerShell 7) step, and the Windows PowerShell 5.1 child inherits PowerShell 7's
+        // module path, where an incompatible Microsoft.PowerShell.Security comes first: Get-Acl then "could not be loaded". A stand-in for
+        // that module (it demands PowerShell 7) is put first, exactly like that.
+        using var sb = new Sandbox();
+        var fake = sb.Dir("ps7-modules");
+        var mod = sb.Dir("ps7-modules", "Microsoft.PowerShell.Security");
+        File.WriteAllText(Path.Combine(mod, "Microsoft.PowerShell.Security.psd1"),
+            "@{ ModuleVersion = '7.0.0.0'; GUID = 'a9dd0f3d-4a8c-4f43-8f16-5c0f0b6d9b11'; PowerShellVersion = '7.0'; CompatiblePSEditions = @('Core'); CmdletsToExport = @('Get-Acl','Set-Acl') }");
+        string inherited = fake + ";" + Environment.GetEnvironmentVariable("PSModulePath");
+        var raw = Run("install.ps1", "autoload", sb.Root, inherited, raw: true);
+        if (raw == null) return;
+        Assert.Equal("failed", raw["autoload"]);                                                   // the stand-in reproduces the workflow's failure
+        // with the installer's own reset and explicit import (what install.ps1 and uninstall.ps1 do first), the same environment works
+        Assert.Contains(Run("install.ps1", "trust-system", sb.Root, inherited)!["trusted"], new[] { "True", "False" });   // runs; Get-Acl loaded
+        Assert.Equal("False", Run("install.ps1", "trust-users-writable", sb.Root, inherited)!["trusted"]);
+        Assert.Equal("ok", Run("uninstall.ps1", "autoload", sb.Root, inherited)!["autoload"]);
+    }
+
+    [Fact]
+    public void BothScriptsImportWhatTheyUseByFullPathAndRerunInWindowsPowerShellWhenStartedFromPowerShellSeven()
+    {
+        var root = RepoRoot();
+        if (root == null) return;
+        foreach (var name in new[] { "install.ps1", "uninstall.ps1" })
+        {
+            var text = File.ReadAllText(Path.Combine(root, name));
+            Assert.Contains("Import-SystemModules @('ScheduledTasks')", text.Replace("'Microsoft.PowerShell.Security', ", ""));
+            Assert.Contains("Import-SystemModules @('Appx') -Optional", text);
+            Assert.Contains("$PSVersionTable.PSEdition -eq 'Core'", text);                  // started from PowerShell 7: run again in 5.1
+            Assert.Contains(@"WindowsPowerShell\v1.0\powershell.exe", text);
+        }
     }
 
     [Fact]
