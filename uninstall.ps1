@@ -2,7 +2,9 @@
  Quick Sweep uninstaller. Run from an elevated PowerShell:   .\uninstall.ps1
 
  Removes the logon task, the Start-menu shortcut, the program files and (unless -KeepData) the settings, session
- history and logs under C:\ProgramData\QuickSweep (and the per-user folder %LOCALAPPDATA%\QuickSweep). The PawnIO driver is removed
+ history and logs under C:\ProgramData\QuickSweep, when that folder is administrators-only (a folder a normal program can write to is never
+ deleted from inside as an administrator, so it is left for you to delete; that includes the per-user folder %LOCALAPPDATA%\QuickSweep,
+ which only holds what a plain, non-elevated run wrote). The PawnIO driver is removed
  only if install.ps1 installed it (use -KeepSensorDriver to leave it in place, for example when another tool uses it).
  It also cleans up anything left by the earlier name of this program ("PC Care": task PcCare, C:\Program Files\PcCare,
  C:\ProgramData\PcCare, Start-menu link "PC Care").
@@ -104,29 +106,107 @@ $names = @(
 
 function Test-Link($p) { [bool]((Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue).Attributes -band [IO.FileAttributes]::ReparsePoint) }
 
-# Removes an admin-only folder; a link is removed as a link, never walked into.
-function Remove-AdminTree($p) {
-    if (-not (Test-Path -LiteralPath $p)) { return }
-    $it = Get-Item -LiteralPath $p -Force
-    if ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) { $it.Delete() } else { Remove-Item -LiteralPath $p -Recurse -Force }
+function Get-AdminSids { @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') }
+
+# Allow-entries of an ACL that give somebody other than SYSTEM, Administrators and TrustedInstaller a way to write, delete, re-permission
+# or take ownership of what is in the folder, INCLUDING entries that only children inherit (a user who is granted "modify, inherited by new
+# files" can change everything copied there afterwards). The only entries excused are CREATOR OWNER and CREATOR GROUP when they are
+# inherit-only: they are placeholders that become the owner or group of a future child, and a child created by an administrator is owned by one.
+# GENERIC_WRITE and GENERIC_ALL count as write-like too: inherit-only entries are stored with generic rights.
+function Get-UntrustedWriteAces($sec) {
+    $admin = Get-AdminSids
+    $writeLike = [int]([Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership') -bor 0x50000000
+    $inheritOnly = [Security.AccessControl.PropagationFlags]::InheritOnly
+    foreach ($r in $sec.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($r.AccessControlType -ne 'Allow') { continue }
+        $sid = $r.IdentityReference.Value
+        if ($admin -contains $sid) { continue }
+        $onlyForChildren = [bool]($r.PropagationFlags -band $inheritOnly)
+        if (($sid -eq 'S-1-3-0' -or $sid -eq 'S-1-3-1') -and $onlyForChildren) { continue }
+        if (([int]$r.FileSystemRights -band $writeLike) -ne 0) { "$sid ($($r.FileSystemRights)$(if ($onlyForChildren) { ', inherited by new children' }))" }
+    }
 }
 
-# The per-user folder is writable by a normal process, so this elevated script never deletes recursively there: only files with the
-# program's own names, one level deep, and the folder itself when it ends up empty.
-function Remove-UserFolderKnownFiles($dir) {
-    if (-not (Test-Path -LiteralPath $dir) -or (Test-Link $dir)) { return }
-    $files = 'settings.json', 'sessions.json', 'drivehealth.json', 'deletions.log', 'deletions.log.old', 'pccare.log', 'pccare.log.old',
-             'quicksweep.log', 'quicksweep.log.old', 'open.txt', 'dump.json', 'gamemode-state.json', 'state-refused.txt', 'migrated-from-user-folder.txt'
-    foreach ($n in $files) { $f = Join-Path $dir $n; if ((Test-Path -LiteralPath $f -PathType Leaf) -and -not (Test-Link $f)) { [IO.File]::Delete($f) } }
-    foreach ($sub in 'public', 'jobs') {
-        $d = Join-Path $dir $sub
-        if ((Test-Path -LiteralPath $d) -and -not (Test-Link $d)) {
-            foreach ($f in Get-ChildItem -LiteralPath $d -File -Force -ErrorAction SilentlyContinue) { if (-not ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $f.Name -match '^[A-Za-z0-9._-]+$') { [IO.File]::Delete($f.FullName) } }
-            if (-not (Get-ChildItem -LiteralPath $d -Force -ErrorAction SilentlyContinue)) { [IO.Directory]::Delete($d) }
-        }
+# The trust test the app applies to its own state folder: not a link; owned by SYSTEM, Administrators or TrustedInstaller; nobody else
+# may write, delete or re-permission it (or what will be created in it); nothing directly inside is a link or belongs to somebody else.
+function Test-TrustedStateFolder($dir) {
+    $admin = Get-AdminSids
+    if (-not (Test-Path -LiteralPath $dir)) { return $false }
+    if (Test-Link $dir) { Write-Warning "      $dir is a junction or symbolic link"; return $false }
+    $sec = Get-Acl -LiteralPath $dir
+    $owner = $sec.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($admin -notcontains $owner) { Write-Warning "      $dir is owned by $owner, not by Administrators or SYSTEM"; return $false }
+    $bad = @(Get-UntrustedWriteAces $sec)
+    if ($bad.Count -gt 0) { Write-Warning "      $dir lets $($bad -join '; ') change it"; return $false }
+    foreach ($e in Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue) {
+        if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { Write-Warning "      $($e.FullName) is a link"; return $false }
+        $o = (Get-Acl -LiteralPath $e.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($admin -notcontains $o) { Write-Warning "      $($e.FullName) is owned by $o"; return $false }
     }
-    if (-not (Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) { [IO.Directory]::Delete($dir) }
+    return $true
 }
+
+# The same test for everything below a folder, however deep (links are refused, never walked into): every file and folder must belong to an
+# administrative account and must not give anybody else write-like rights. Used on what was just copied.
+function Test-AdminOnlyTree($dir) {
+    $admin = Get-AdminSids
+    try {
+        $stack = New-Object System.Collections.Stack
+        $stack.Push($dir)
+        while ($stack.Count -gt 0) {
+            $d = $stack.Pop()
+            foreach ($e in Get-ChildItem -LiteralPath $d -Force -ErrorAction Stop) {
+                if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { Write-Warning "      $($e.FullName) is a link"; return $false }
+                $sec = Get-Acl -LiteralPath $e.FullName
+                $o = $sec.GetOwner([Security.Principal.SecurityIdentifier]).Value
+                if ($admin -notcontains $o) { Write-Warning "      $($e.FullName) is owned by $o"; return $false }
+                $bad = @(Get-UntrustedWriteAces $sec)
+                if ($bad.Count -gt 0) { Write-Warning "      $($e.FullName) lets $($bad -join '; ') change it"; return $false }
+                if ($e.PSIsContainer) { $stack.Push($e.FullName) }
+            }
+        }
+        return $true
+    } catch { Write-Warning "      could not check the permissions below ${dir}: $_"; return $false }
+}
+
+# Removes a folder tree without ever following a link: a junction or symbolic link is removed as the link it is (where it points is never
+# touched), real folders are emptied entry by entry, depth first. Throws when something cannot be removed.
+function Remove-TreeNoFollow([IO.FileSystemInfo]$e) {
+    if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ($e -is [IO.DirectoryInfo]) { [IO.Directory]::Delete($e.FullName) } else { [IO.File]::Delete($e.FullName) }
+        return
+    }
+    if ($e.Attributes -band [IO.FileAttributes]::ReadOnly) { [IO.File]::SetAttributes($e.FullName, [IO.FileAttributes]::Normal) }
+    if ($e -is [IO.DirectoryInfo]) {
+        foreach ($c in $e.GetFileSystemInfos()) { Remove-TreeNoFollow $c }
+        [IO.Directory]::Delete($e.FullName)
+    } else {
+        [IO.File]::Delete($e.FullName)
+    }
+}
+
+function Remove-AdminTree($p) {
+    $it = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+    if ($it) { Remove-TreeNoFollow $it }
+}
+
+# %ProgramData%\QuickSweep. A normal user can create a folder of that name in ProgramData and fill it (the installer sets such a folder aside
+# and makes a new one), and anything deleted by path as an administrator inside a folder a normal program can write to can be raced (a link
+# put in the place of a folder between the check and the delete). So nothing is deleted inside such a folder at all: a folder is only removed
+# when it passes the checks the app applies (owned by Administrators or SYSTEM, nobody else able to write, no link anywhere, every item
+# administrators-only), which also means nobody else can change it while it is being removed. Returns $true when it is gone, $false when it
+# was left alone (the checks print their reasons). A link standing in its place is removed as a link, which touches nothing it points to.
+function Remove-StateFolder($p) {
+    $it = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+    if (-not $it) { return $false }
+    if ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) { Remove-TreeNoFollow $it; return $true }
+    $ok = $false
+    try { $ok = [bool]((Test-TrustedStateFolder $p) -and (Test-AdminOnlyTree $p)) } catch { Write-Warning "  could not check $p : $($_.Exception.Message)" }
+    if ($ok) { Remove-AdminTree $p; return $true }
+    return $false
+}
+
+function Test-Exists($p) { [bool](Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue) }      # also true for a link whose target is gone
 
 # did install.ps1 (of either name) install PawnIO?
 $weInstalledDriver = $false
@@ -168,13 +248,13 @@ if ($weInstalledDriver -and -not $KeepSensorDriver) {
 if (-not $KeepData) {
     foreach ($n in $names) {
         $elev = Join-Path $programData $n.Dir
-        if (Test-Path -LiteralPath $elev) { Remove-AdminTree $elev; Write-Host "  settings, sessions and logs removed ($elev)" }
-        $user = Join-Path $localAppData $n.Dir
-        if (Test-Path -LiteralPath $user) {
-            Remove-UserFolderKnownFiles $user
-            if (Test-Path -LiteralPath $user) { Write-Host "  $user holds files that are not Quick Sweep's own; delete it yourself when you like" }
-            else { Write-Host "  per-user data removed ($user)" }
+        if (Test-Exists $elev) {
+            if (Remove-StateFolder $elev) { Write-Host "  settings, sessions and logs removed ($elev)" }
+            else { Write-Host "  $elev was left in place because it is not administrators-only (see above); delete it yourself when you like" }
         }
+        # a folder a normal program can write to: nothing is deleted inside it as an administrator
+        $user = Join-Path $localAppData $n.Dir
+        if (Test-Exists $user) { Write-Host "  $user was left in place (it is writable by normal programs, so it is not deleted as an administrator); delete it yourself when you like" }
     }
 } else {
     Write-Host '  data kept (-KeepData)'

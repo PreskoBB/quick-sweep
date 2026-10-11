@@ -17,7 +17,7 @@
  Upgrading from the earlier name of this program ("PC Care": task PcCare, C:\Program Files\PcCare, C:\ProgramData\PcCare, Start-menu
  link "PC Care") is automatic: its settings, sessions and deletion log are copied into the new secured state folder (only
  from a folder that passes the same trust checks the app applies), then the old task, program files, shortcut and state
- folder are removed. The PawnIO driver is kept. -KeepOldData leaves the old state folder in place.
+ folder are removed. The PawnIO driver is kept. -KeepOldData leaves the old state folder in place. The earlier per-user folder (%LOCALAPPDATA%\PcCare) is never touched.
 
  Optional: -ImportSettings <file.json> merges that settings file into C:\ProgramData\QuickSweep\settings.json during the install
  (the same code as Settings > Import: only the keys that are in the file change, everything else keeps its value). It runs
@@ -130,7 +130,6 @@ $lnk        = Join-Path $loc.StartMenu 'Quick Sweep.lnk'
 $state      = Join-Path $installDir 'install-state.json'
 $dataDir    = Join-Path $programData 'QuickSweep'
 $user       = $id.Name
-$adminSids  = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
 
 # the earlier name of this program
 $oldTask    = 'PcCare'
@@ -204,49 +203,245 @@ function Test-AdminOnlyTree($dir) {
     } catch { Write-Warning "      could not check the permissions below ${dir}: $_"; return $false }
 }
 
-# Owner Administrators, inheritance removed, SYSTEM and Administrators full control, Users read and execute (inherited by what is inside).
-function Set-AdminOnlyAcl($dir) {
-    icacls $dir /setowner '*S-1-5-32-544' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls could not take ownership of $dir for Administrators" }
-    icacls $dir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "icacls could not set the permissions of $dir" }
-    # read it back: the owner must really be Administrators now (not assumed from the exit code)
-    $now = (Get-Acl -LiteralPath $dir).GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($now -ne 'S-1-5-32-544') { throw "The owner of $dir is $now after setting it to Administrators (S-1-5-32-544)." }
+function Test-Exists($p) { [bool](Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue) }      # also true for a link whose target is gone
+
+# ---- the permissions this installer writes: ONE complete security descriptor, never an edit of what was there ----------------------------
+# An incremental edit cannot be trusted: "icacls /grant:r" replaces only the accounts it names and leaves every other explicit entry where it
+# is (for example the creator's own FullControl entry, which a program running as that user could then use to rewrite the folder). So a
+# complete descriptor is written instead: owner Administrators and a PROTECTED DACL (nothing inherited) holding exactly SYSTEM full control,
+# Administrators full control and Users read and execute. For a folder the entries are passed on to what is created inside it ((OI)(CI));
+# a file gets the plain equivalent. Only the owner and the DACL are written (the primary group is left alone: a normal account may not set it).
+function Get-AdminOnlySddl([bool]$Container) {
+    if ($Container) { 'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)' }
+    else            { 'O:BAD:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)' }
 }
 
-# Everything below a folder: owner Administrators, then inherit the folder's protected permissions. The owner is set explicitly because the
-# default owner of what an elevated administrator creates can be that person's own account (a policy decides), and that account is also
-# the one a normal program of the same user runs as: an owner may always rewrite the permissions of what it owns, so a file owned by the
-# user's own account is not administrators-only no matter what its permission list says. Files owned by Administrators are not: the
-# Administrators group is deny-only in the normal program's token.
-function Set-AdminOnlyTree($dir) {
-    icacls "$dir\*" /setowner '*S-1-5-32-544' /T /C | Out-Null
-    icacls "$dir\*" /reset /T /C | Out-Null
+# A security object that carries only the DACL part of that descriptor (so only the DACL is written when it is applied).
+function New-AdminOnlySecurity([bool]$Container) {
+    $sec = if ($Container) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity }
+    $sec.SetSecurityDescriptorSddlForm((Get-AdminOnlySddl $Container), [Security.AccessControl.AccessControlSections]::Access)
+    return $sec
 }
 
-# Removes an admin-only folder; a link is removed as a link, never walked into.
-function Remove-AdminTree($p) {
-    if (-not (Test-Path -LiteralPath $p)) { return }
-    $it = Get-Item -LiteralPath $p -Force
-    if ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) { $it.Delete() } else { Remove-Item -LiteralPath $p -Recurse -Force }
+# "owner <sid>; <SDDL>" of an item, for error messages.
+function Get-OwnerAndSddl([string]$Path) {
+    try {
+        $s = (Get-Item -LiteralPath $Path -Force -ErrorAction Stop).GetAccessControl()
+        return "owner $($s.GetOwner([Security.Principal.SecurityIdentifier]).Value); $($s.GetSecurityDescriptorSddlForm('All'))"
+    } catch { return "unreadable ($($_.Exception.Message))" }
 }
 
-# The per-user folders (%LOCALAPPDATA%\...) are writable by a normal process, so an elevated script never deletes recursively there:
-# only files with the program's own names, one level deep, and the folder itself when it ends up empty.
-function Remove-UserFolderKnownFiles($dir) {
-    if (-not (Test-Path -LiteralPath $dir) -or (Test-Link $dir)) { return }
-    $names = 'settings.json', 'sessions.json', 'drivehealth.json', 'deletions.log', 'deletions.log.old', 'pccare.log', 'pccare.log.old',
-             'quicksweep.log', 'quicksweep.log.old', 'open.txt', 'dump.json', 'gamemode-state.json', 'state-refused.txt', 'migrated-from-user-folder.txt'
-    foreach ($n in $names) { $f = Join-Path $dir $n; if ((Test-Path -LiteralPath $f -PathType Leaf) -and -not (Test-Link $f)) { [IO.File]::Delete($f) } }
-    foreach ($sub in 'public', 'jobs') {
-        $d = Join-Path $dir $sub
-        if ((Test-Path -LiteralPath $d) -and -not (Test-Link $d)) {
-            foreach ($f in Get-ChildItem -LiteralPath $d -File -Force -ErrorAction SilentlyContinue) { if (-not ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $f.Name -match '^[A-Za-z0-9._-]+$') { [IO.File]::Delete($f.FullName) } }
-            if (-not (Get-ChildItem -LiteralPath $d -Force -ErrorAction SilentlyContinue)) { [IO.Directory]::Delete($d) }
+# What differs between an item and that descriptor, as text ('' when nothing does): the owner, whether the DACL is protected, and every entry
+# (account, rights, inheritance), compared structurally, so it does not depend on how the SDDL text happens to be spelled.
+function Get-AdminOnlyDifference([string]$Path, [bool]$Container, [string]$OwnerSid = 'S-1-5-32-544') {
+    $sec = if ($Container) { [IO.Directory]::GetAccessControl($Path) } else { [IO.File]::GetAccessControl($Path) }
+    $diff = @()
+    $owner = $sec.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -ne $OwnerSid) { $diff += "owner is $owner, not $OwnerSid" }
+    if (-not $sec.AreAccessRulesProtected) { $diff += 'the permissions are inherited from the parent folder' }
+    $inh = if ($Container) { 'ContainerInherit, ObjectInherit' } else { 'None' }
+    $want = @("S-1-5-18;2032127;$inh;None;Allow", "S-1-5-32-544;2032127;$inh;None;Allow", "S-1-5-32-545;1179817;$inh;None;Allow")
+    $have = @($sec.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object {
+        "$($_.IdentityReference.Value);$([int]$_.FileSystemRights);$($_.InheritanceFlags);$($_.PropagationFlags);$($_.AccessControlType)" })
+    if ($have.Count -ne $want.Count) { $diff += "$($have.Count) permission entries instead of $($want.Count)" }
+    foreach ($h in $have) { if ($want -notcontains $h) { $diff += "unexpected entry $h" } }
+    foreach ($w in $want) { if ($have -notcontains $w) { $diff += "missing entry $w" } }
+    return ($diff -join '; ')
+}
+
+# Writes the descriptor to ONE existing file or folder and reads it back; throws when anything differs. Refuses a link (the permission call
+# would follow it and change the target). The DACL goes first: it hands Administrators full control, which is what the owner change needs.
+# The owner is only written when it is not already the wanted one.
+function Set-AdminOnlySecurity([string]$Path, [bool]$Container, [string]$OwnerSid = 'S-1-5-32-544') {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "$Path is a junction or symbolic link: its permissions are not changed." }
+    if ([bool]$item.PSIsContainer -ne $Container) { throw "$Path is not a $(if ($Container) { 'folder' } else { 'file' })." }
+    try {
+        $item.SetAccessControl((New-AdminOnlySecurity $Container))
+        if ($item.GetAccessControl().GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $OwnerSid) {
+            $own = if ($Container) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity }
+            $own.SetOwner([Security.Principal.SecurityIdentifier]$OwnerSid)
+            try { $item.SetAccessControl($own) }
+            catch {
+                # Not every token may name every account as owner without the restore privilege; icacls enables the privileges it needs. One item
+                # only (/L: a link itself, never its target; no /T), exit code checked, and the read-back below decides.
+                & (Join-Path ([Environment]::SystemDirectory) 'icacls.exe') $Path /setowner "*$OwnerSid" /L | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw $_.Exception }
+            }
+        }
+    } catch {
+        $why = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
+        throw "Could not set the permissions of ${Path}: $why"
+    }
+    if (Test-Link $Path) { throw "$Path became a junction or symbolic link while its permissions were set." }
+    $diff = Get-AdminOnlyDifference $Path $Container $OwnerSid
+    if ($diff) { throw "The permissions of $Path are not what was written ($diff). Now: $(Get-OwnerAndSddl $Path)" }
+}
+
+# CreateDirectoryW, called without Add-Type: Add-Type compiles into the TEMP folder of the user, where a normal program of the same user could swap
+# the result before this elevated process loads it. Small dynamic types are built in memory instead (no file is written anywhere): two lookups
+# (GetModuleHandleW / GetProcAddress, which need no error code) find kernel32!CreateDirectoryW, and a delegate type marked SetLastError calls it.
+# (A SetLastError flag cannot be put on a dynamic P/Invoke method, so the error code would be lost; on a delegate it is an ordinary attribute.)
+# The error code is what tells "it was already there" (ERROR_ALREADY_EXISTS, 183) from every other failure.
+function Get-CreateDirectoryApi {
+    if ($script:CreateDirectoryApi) { return $script:CreateDirectoryApi }
+    $asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object Reflection.AssemblyName 'QuickSweepNative'), [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $mod = $asm.DefineDynamicModule('QuickSweepNative', $false)
+    $lt = $mod.DefineType('Lookup', 'Public, Class')
+    $a = $lt.DefinePInvokeMethod('GetModuleHandleW', 'kernel32.dll', 'Public, Static, PinvokeImpl', [Reflection.CallingConventions]::Standard,
+        [IntPtr], [Type[]]@([string]), [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Unicode)
+    $a.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    $b = $lt.DefinePInvokeMethod('GetProcAddress', 'kernel32.dll', 'Public, Static, PinvokeImpl', [Reflection.CallingConventions]::Standard,
+        [IntPtr], [Type[]]@([IntPtr], [string]), [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Ansi)
+    $b.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    $lookup = $lt.CreateType()
+    $dt = $mod.DefineType('CreateDirectoryW', 'Class, Public, Sealed, AnsiClass, AutoClass', [MulticastDelegate])
+    $ufp = [Runtime.InteropServices.UnmanagedFunctionPointerAttribute]
+    $dt.SetCustomAttribute((New-Object Reflection.Emit.CustomAttributeBuilder($ufp.GetConstructor([Type[]]@([Runtime.InteropServices.CallingConvention])),
+        [object[]]@([Runtime.InteropServices.CallingConvention]::Winapi),
+        [Reflection.FieldInfo[]]@($ufp.GetField('SetLastError'), $ufp.GetField('CharSet')), [object[]]@($true, [Runtime.InteropServices.CharSet]::Unicode))))
+    $ctor = $dt.DefineConstructor('RTSpecialName, HideBySig, Public', [Reflection.CallingConventions]::Standard, [Type[]]@([object], [IntPtr]))
+    $ctor.SetImplementationFlags('Runtime, Managed')
+    $inv = $dt.DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', [bool], [Type[]]@([string], [IntPtr]))
+    $inv.SetImplementationFlags('Runtime, Managed')
+    $delegateType = $dt.CreateType()
+    $module = $lookup::GetModuleHandleW('kernel32.dll')                  # kernel32 is loaded in every process: nothing is searched for or loaded
+    $proc = $lookup::GetProcAddress($module, 'CreateDirectoryW')
+    if ($module -eq [IntPtr]::Zero -or $proc -eq [IntPtr]::Zero) { throw 'kernel32!CreateDirectoryW was not found.' }
+    $script:CreateDirectoryApi = [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($proc, $delegateType)
+    return $script:CreateDirectoryApi
+}
+
+# Creates ONE folder with the protected DACL of the descriptor as part of the creation (SECURITY_ATTRIBUTES), so there is no moment at which it
+# inherits anything. Returns $true when this call created it, $false when it was already there (ERROR_ALREADY_EXISTS: nothing was changed on it);
+# any other failure throws. The parent must exist.
+function New-FolderWithDescriptor([string]$Path) {
+    $api = Get-CreateDirectoryApi
+    $bytes = (New-AdminOnlySecurity $true).GetSecurityDescriptorBinaryForm()
+    $m = [Runtime.InteropServices.Marshal]
+    $sd = $m::AllocHGlobal($bytes.Length)
+    $sa = $m::AllocHGlobal(24)
+    try {
+        $m::Copy($bytes, 0, $sd, $bytes.Length)
+        for ($i = 0; $i -lt 24; $i += 4) { $m::WriteInt32($sa, $i, 0) }
+        # SECURITY_ATTRIBUTES { DWORD nLength; LPVOID lpSecurityDescriptor; BOOL bInheritHandle } (the pointer sits after the DWORD, padded on 64-bit)
+        $m::WriteInt32($sa, 0, $(if ([IntPtr]::Size -eq 8) { 24 } else { 12 }))
+        $m::WriteIntPtr($sa, [IntPtr]::Size, $sd)
+        $ok = $api.Invoke($Path, $sa); $err = $m::GetLastWin32Error()
+    } finally { $m::FreeHGlobal($sa); $m::FreeHGlobal($sd) }
+    if ($ok) { return $true }
+    if ($err -eq 183) { return $false }
+    throw "Could not create ${Path}: $((New-Object ComponentModel.Win32Exception $err).Message) (error $err)"
+}
+
+# A folder that is administrators-only from its first moment. Returns $true when it was created here and then completed (owner) and read back
+# in full, owner included; $false when it already existed (it is then NOT adopted: the caller sets it aside).
+function New-AdminOnlyFolder([string]$Path, [string]$OwnerSid = 'S-1-5-32-544') {
+    if (-not (New-FolderWithDescriptor $Path)) { return $false }
+    Set-AdminOnlySecurity $Path $true $OwnerSid
+    return $true
+}
+
+# The top folder of a tree: the complete descriptor. Its contents are not touched (Set-AdminOnlyTree does those).
+function Set-AdminOnlyAcl([string]$dir, [string]$OwnerSid = 'S-1-5-32-544') { Set-AdminOnlySecurity $dir $true $OwnerSid }
+
+# Every file and folder below $dir, parents before children, WITHOUT following links: a junction or symbolic link anywhere throws (naming it)
+# before the caller has changed anything. Items are .NET FileSystemInfo objects.
+function Get-TreeItems([string]$dir) {
+    $out = New-Object System.Collections.ArrayList
+    $stack = New-Object System.Collections.Stack
+    $stack.Push($dir)
+    while ($stack.Count -gt 0) {
+        $d = $stack.Pop()
+        foreach ($e in (New-Object IO.DirectoryInfo $d).GetFileSystemInfos()) {
+            if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "$($e.FullName) is a junction or symbolic link." }
+            [void]$out.Add($e)
+            if ($e -is [IO.DirectoryInfo]) { $stack.Push($e.FullName) }
         }
     }
-    if (-not (Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) { [IO.Directory]::Delete($dir) }
+    return $out.ToArray()
+}
+
+# Everything below a folder that THIS INSTALLER created or copied: the complete descriptor on every item, one by one in PowerShell (no recursive
+# icacls, which follows junctions as an administrator). The owner is written explicitly because the default owner of what an elevated
+# administrator creates can be that person's own account (a policy decides), and that account is also the one a normal program of the same
+# user runs as: an owner may always rewrite the permissions of what it owns, so a file owned by the user's own account is not
+# administrators-only no matter what its permission list says. Never call this on content that was already there before the install.
+function Set-AdminOnlyTree([string]$dir, [string]$OwnerSid = 'S-1-5-32-544') {
+    $items = @(Get-TreeItems $dir)
+    foreach ($e in $items) { Set-AdminOnlySecurity $e.FullName ([bool]($e -is [IO.DirectoryInfo])) $OwnerSid }
+}
+
+# Removes a folder tree without ever following a link: a junction or symbolic link is removed as the link it is (where it points is never
+# touched), real folders are emptied entry by entry, depth first. Throws when something cannot be removed.
+function Remove-TreeNoFollow([IO.FileSystemInfo]$e) {
+    if ($e.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ($e -is [IO.DirectoryInfo]) { [IO.Directory]::Delete($e.FullName) } else { [IO.File]::Delete($e.FullName) }
+        return
+    }
+    if ($e.Attributes -band [IO.FileAttributes]::ReadOnly) { [IO.File]::SetAttributes($e.FullName, [IO.FileAttributes]::Normal) }
+    if ($e -is [IO.DirectoryInfo]) {
+        foreach ($c in $e.GetFileSystemInfos()) { Remove-TreeNoFollow $c }
+        [IO.Directory]::Delete($e.FullName)
+    } else {
+        [IO.File]::Delete($e.FullName)
+    }
+}
+
+function Remove-AdminTree($p) {
+    $it = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+    if ($it) { Remove-TreeNoFollow $it }
+}
+
+# Renames a folder (or link, or file) out of the way under a unique name; nothing in it is read, changed or deleted. Returns the new name.
+function Move-FolderAside([string]$dir) {
+    $stamp = Get-Date -Format yyyyMMddHHmmss
+    $aside = "$dir.untrusted-$stamp"
+    for ($n = 2; Test-Exists $aside; $n++) { $aside = "$dir.untrusted-$stamp-$n" }
+    try { Rename-Item -LiteralPath $dir -NewName (Split-Path $aside -Leaf) -ErrorAction Stop }
+    catch { throw "$dir cannot be trusted (see the warnings above) and could not be renamed out of the way: $($_.Exception.Message) Rename it yourself, as an administrator, and run the installer again." }
+    if (Test-Exists $dir) { throw "$dir is still there after it was renamed to $aside." }
+    return $aside
+}
+
+# What may already be at $dir. A normal user can create C:\ProgramData\QuickSweep (and fill it) before the installer ever runs, so whatever is
+# there is judged FIRST, with the checks the app applies to its own state folder (owner, permissions, no link anywhere inside, every item
+# administrators-only) and is never re-owned, reset or deleted to make it pass. When it fails, the whole folder is renamed out of the way.
+# Returns $null when there was nothing or it passed, otherwise the new name.
+function Move-UntrustedFolderAside([string]$dir) {
+    $it = Get-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+    if (-not $it) { return $null }
+    if ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) { Write-Warning "      $dir is a junction or symbolic link" }
+    elseif (-not $it.PSIsContainer) { Write-Warning "      $dir is a file, not a folder" }
+    else {
+        $ok = $false
+        try { $ok = [bool]((Test-TrustedStateFolder $dir) -and (Test-AdminOnlyTree $dir)) } catch { Write-Warning "      could not check $dir : $($_.Exception.Message)" }
+        if ($ok) { return $null }
+    }
+    $aside = Move-FolderAside $dir
+    Write-Warning "      $dir was not administrators-only (see above). It was renamed to $aside (nothing in it was changed or deleted); a fresh folder is used."
+    return $aside
+}
+
+# The state folder: what was there is judged first (above); a folder that passed keeps its contents as they are and only gets its own
+# descriptor renewed; otherwise it is created new, administrators-only from its first moment. If somebody creates the folder between the
+# check and the creation (ERROR_ALREADY_EXISTS), that folder is by definition not the installer's and not checked: it is set aside like any
+# untrusted one and the creation is tried once more. Ends with the full check of the whole tree.
+# Returns the name an untrusted folder was moved to, or $null.
+function Initialize-StateFolder([string]$dir, [string]$OwnerSid = 'S-1-5-32-544', [string[]]$SubFolders = @('public')) {
+    $aside = Move-UntrustedFolderAside $dir
+    if (Test-Exists $dir) { Set-AdminOnlyAcl $dir $OwnerSid }
+    elseif (-not (New-AdminOnlyFolder $dir $OwnerSid)) {
+        $aside = Move-FolderAside $dir
+        Write-Warning "      $dir appeared while the installer was running. It was renamed to $aside (nothing in it was read, changed or deleted); a fresh folder is used."
+        if (-not (New-AdminOnlyFolder $dir $OwnerSid)) { throw "$dir was created by somebody else again while the installer was running. Run the installer again." }
+    }
+    foreach ($s in $SubFolders) {
+        $sub = Join-Path $dir $s
+        if (-not (Test-Exists $sub) -and -not (New-AdminOnlyFolder $sub $OwnerSid)) { throw "$sub appeared inside the new administrators-only folder; run the installer again." }
+    }
+    if (-not ((Test-TrustedStateFolder $dir) -and (Test-AdminOnlyTree $dir))) { throw "$dir is not administrators-only even though it was just checked or created (see the warnings above); Quick Sweep will not use it." }
+    return $aside
 }
 
 if (-not (Test-Path (Join-Path $Source 'QuickSweep.exe'))) {
@@ -275,13 +470,13 @@ if (-not (Test-UnderDirectory $exe $programFiles)) { throw "$exe is not below th
 New-Item -ItemType Directory -Force $installDir | Out-Null
 # the folder the elevated task will run from must be writable by administrators only: refuse otherwise (nothing has been copied yet)
 if (-not (Test-TrustedStateFolder $installDir)) { throw "$installDir is not an administrators-only folder (see the warning above), so Quick Sweep will not be installed into it." }
-Set-AdminOnlyAcl $installDir                       # explicit and protected before anything is copied in: what arrives inherits it
+Set-AdminOnlyAcl $installDir                       # the complete descriptor, written before anything is copied in (what arrives inherits it)
 robocopy $Source $installDir /MIR /NFL /NDL /NJH /NJS /NP /XF install-state.json | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with code $LASTEXITCODE" }
-Set-AdminOnlyTree $installDir                       # every copied file and folder: owner Administrators, inheriting SYSTEM + Administrators full, Users read and execute
+Set-AdminOnlyTree $installDir                       # every copied file and folder gets the complete descriptor, one by one (a link anywhere below stops the install)
 if (-not (Test-AdminOnlyTree $installDir)) { throw "What was copied to $installDir is not administrators-only (see the warnings above); the logon task was not changed." }
 # files from a downloaded zip carry the "downloaded from the internet" mark; the copy in Program Files should not
-Get-ChildItem $installDir -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
+foreach ($e in @(Get-TreeItems $installDir)) { if ($e -is [IO.FileInfo]) { Unblock-File -LiteralPath $e.FullName -ErrorAction SilentlyContinue } }
 
 # --- .NET 10 Desktop Runtime (the app is built against it, not bundled) ------------------------------
 $hasRuntime = [bool](Get-ChildItem (Join-Path $programFiles 'dotnet\shared\Microsoft.WindowsDesktop.App') -Directory -Filter '10.*' -ErrorAction SilentlyContinue)
@@ -306,38 +501,17 @@ if (-not $hasRuntime) {
 # Administrators may write there; every user may read (gaming.json is for other programs to check). The app verifies
 # this at every start and refuses the folder if it is wrong. Nothing a user-level process can write is ever trusted.
 Write-Host "      State folder $dataDir (SYSTEM + Administrators full, users read-only)..."
-if (Test-Path $dataDir) {
-    $item = Get-Item $dataDir -Force
-    $ownerSid = (Get-Acl $dataDir).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "$dataDir is a junction or symbolic link. Remove it first; Quick Sweep will not use it." }
-    if ($adminSids -notcontains $ownerSid) {
-        $aside = "$dataDir.untrusted-$(Get-Date -Format yyyyMMddHHmmss)"
-        Rename-Item $dataDir $aside
-        Write-Warning "      $dataDir belonged to $ownerSid, not to Administrators. It was renamed to $aside; a fresh folder is used."
-    }
-}
-New-Item -ItemType Directory -Force $dataDir | Out-Null
-Set-AdminOnlyAcl $dataDir
-if (Get-ChildItem $dataDir -Force -ErrorAction SilentlyContinue) { Set-AdminOnlyTree $dataDir }
-New-Item -ItemType Directory -Force (Join-Path $dataDir 'public') | Out-Null
-if (-not ((Test-TrustedStateFolder $dataDir) -and (Test-AdminOnlyTree $dataDir))) {
-    # something inside belongs to a non-administrator, or is a link: the app would refuse this folder at every start. Keep it (nothing is
-    # deleted), set it aside, and start with a fresh folder.
-    $aside = "$dataDir.untrusted-$(Get-Date -Format yyyyMMddHHmmss)"
-    Rename-Item $dataDir $aside
-    Write-Warning "      $dataDir contained something that is not administrators-only (see the warnings above). It was renamed to $aside; a fresh folder is used."
-    New-Item -ItemType Directory -Force $dataDir | Out-Null
-    Set-AdminOnlyAcl $dataDir
-    New-Item -ItemType Directory -Force (Join-Path $dataDir 'public') | Out-Null
-    if (-not ((Test-TrustedStateFolder $dataDir) -and (Test-AdminOnlyTree $dataDir))) { throw "$dataDir is not administrators-only even when new; Quick Sweep will not use it." }
-}
+# Any user can create C:\ProgramData\QuickSweep and fill it before this installer runs, so what is already there is checked FIRST and is never
+# re-owned, reset or deleted to make it pass: a folder that fails (not owned by Administrators/SYSTEM, a link anywhere, a non-administrator
+# who can write) is renamed aside whole and a new one is created. Only what this installer creates or copies itself gets its permissions set.
+$null = Initialize-StateFolder $dataDir
 
 # --- settings from the earlier name: only from a folder that passes the same trust test, copies only, never over what exists ---------
 $oldFound = (Get-ScheduledTask -TaskName $oldTask -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $oldInstall) -or (Test-Path -LiteralPath $oldData) -or (Test-Path -LiteralPath $oldLnk)
 $oldDataTrusted = $false
 if ($oldFound) {
     Write-Host '      Found the earlier install of this program (PC Care): moving its settings.'
-    if (Test-TrustedStateFolder $oldData) {
+    if ((Test-TrustedStateFolder $oldData) -and (Test-AdminOnlyTree $oldData)) {
         $oldDataTrusted = $true
         $copied = 0
         foreach ($name in 'settings.json', 'sessions.json', 'drivehealth.json', 'deletions.log', 'deletions.log.old') {
@@ -348,9 +522,9 @@ if ($oldFound) {
             if ($fi.Length -gt 8MB) { Write-Warning "      $name is larger than 8 MB: skipped"; continue }
             if ($name.EndsWith('.json')) { try { Get-Content -LiteralPath $src -Raw | ConvertFrom-Json | Out-Null } catch { Write-Warning "      $name is not valid JSON: skipped"; continue } }
             Copy-Item -LiteralPath $src -Destination $dst
+            Set-AdminOnlySecurity $dst $false         # the copy is this installer's own: the complete file descriptor (nothing else in the folder is touched)
             $copied++
         }
-        Set-AdminOnlyTree $dataDir                        # everything in the new folder: owner Administrators, inheriting SYSTEM + Administrators full, users read-only
         if (-not (Test-AdminOnlyTree $dataDir)) { throw "The files copied into $dataDir are not administrators-only (see the warnings above)." }
         Write-Host "      copied $copied file(s) into $dataDir"
     } elseif (Test-Path -LiteralPath $oldData) {
@@ -390,6 +564,7 @@ if ($SkipSensorDriver) {
     }
 }
 @{ InstalledPawnIO = $weInstalledDriver; InstalledAt = (Get-Date).ToString('s'); User = $user } | ConvertTo-Json | Set-Content $state -Encoding ASCII
+Set-AdminOnlySecurity $state $false                # written after the tree was protected: it gets the file descriptor too (the check before the task is registered looks at it)
 
 # --- optional: merge a settings file (same code as Settings > Import), before the task starts ------------------
 if ($ImportSettings) {
@@ -460,10 +635,9 @@ if ($oldFound) {
             }
         }
     } catch { }
-    if ((Test-Path -LiteralPath $oldUserDir) -and -not $KeepOldData) {
-        Remove-UserFolderKnownFiles $oldUserDir
-        if (Test-Path -LiteralPath $oldUserDir) { Write-Host "      $oldUserDir still holds files this script did not create; delete it yourself when you like." }
-    }
+    # the earlier per-user folder is writable by a normal program: an administrator does not delete inside a folder like that (a link could be put in
+    # its place while this runs), so it is left for the owner to delete
+    if (Test-Exists $oldUserDir) { Write-Host "      The earlier per-user folder $oldUserDir was left in place (nothing is deleted as an administrator inside a folder a normal program can write to); delete it yourself when you like." }
 }
 
 if (-not $NoStart) { Start-ScheduledTask -TaskName $taskName; Write-Host 'Quick Sweep is starting in the tray.' }
