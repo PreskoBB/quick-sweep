@@ -210,6 +210,19 @@ function Set-AdminOnlyAcl($dir) {
     if ($LASTEXITCODE -ne 0) { throw "icacls could not take ownership of $dir for Administrators" }
     icacls $dir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "icacls could not set the permissions of $dir" }
+    # read it back: the owner must really be Administrators now (not assumed from the exit code)
+    $now = (Get-Acl -LiteralPath $dir).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($now -ne 'S-1-5-32-544') { throw "The owner of $dir is $now after setting it to Administrators (S-1-5-32-544)." }
+}
+
+# Everything below a folder: owner Administrators, then inherit the folder's protected permissions. The owner is set explicitly because the
+# default owner of what an elevated administrator creates can be that person's own account (a policy decides), and that account is also
+# the one a normal program of the same user runs as: an owner may always rewrite the permissions of what it owns, so a file owned by the
+# user's own account is not administrators-only no matter what its permission list says. Files owned by Administrators are not: the
+# Administrators group is deny-only in the normal program's token.
+function Set-AdminOnlyTree($dir) {
+    icacls "$dir\*" /setowner '*S-1-5-32-544' /T /C | Out-Null
+    icacls "$dir\*" /reset /T /C | Out-Null
 }
 
 # Removes an admin-only folder; a link is removed as a link, never walked into.
@@ -265,7 +278,7 @@ if (-not (Test-TrustedStateFolder $installDir)) { throw "$installDir is not an a
 Set-AdminOnlyAcl $installDir                       # explicit and protected before anything is copied in: what arrives inherits it
 robocopy $Source $installDir /MIR /NFL /NDL /NJH /NJS /NP /XF install-state.json | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with code $LASTEXITCODE" }
-icacls "$installDir\*" /reset /T /C | Out-Null      # every copied file and folder inherits SYSTEM + Administrators full, Users read and execute
+Set-AdminOnlyTree $installDir                       # every copied file and folder: owner Administrators, inheriting SYSTEM + Administrators full, Users read and execute
 if (-not (Test-AdminOnlyTree $installDir)) { throw "What was copied to $installDir is not administrators-only (see the warnings above); the logon task was not changed." }
 # files from a downloaded zip carry the "downloaded from the internet" mark; the copy in Program Files should not
 Get-ChildItem $installDir -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
@@ -305,7 +318,7 @@ if (Test-Path $dataDir) {
 }
 New-Item -ItemType Directory -Force $dataDir | Out-Null
 Set-AdminOnlyAcl $dataDir
-if (Get-ChildItem $dataDir -Force -ErrorAction SilentlyContinue) { icacls "$dataDir\*" /reset /T /C | Out-Null }
+if (Get-ChildItem $dataDir -Force -ErrorAction SilentlyContinue) { Set-AdminOnlyTree $dataDir }
 New-Item -ItemType Directory -Force (Join-Path $dataDir 'public') | Out-Null
 if (-not ((Test-TrustedStateFolder $dataDir) -and (Test-AdminOnlyTree $dataDir))) {
     # something inside belongs to a non-administrator, or is a link: the app would refuse this folder at every start. Keep it (nothing is
@@ -337,7 +350,7 @@ if ($oldFound) {
             Copy-Item -LiteralPath $src -Destination $dst
             $copied++
         }
-        icacls "$dataDir\*" /reset /T /C | Out-Null       # everything in the new folder inherits SYSTEM + Administrators full, users read-only
+        Set-AdminOnlyTree $dataDir                        # everything in the new folder: owner Administrators, inheriting SYSTEM + Administrators full, users read-only
         if (-not (Test-AdminOnlyTree $dataDir)) { throw "The files copied into $dataDir are not administrators-only (see the warnings above)." }
         Write-Host "      copied $copied file(s) into $dataDir"
     } elseif (Test-Path -LiteralPath $oldData) {

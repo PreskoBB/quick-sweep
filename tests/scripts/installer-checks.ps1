@@ -6,6 +6,7 @@ param(
     [Parameter(Mandatory)][string]$Script,
     [Parameter(Mandatory)][string]$Scenario,
     [string]$Work,
+    [switch]$ForceAdminScenarios,   # run the administrator-only scenarios on a normal account too (they then report the error; for checking the script itself)
     [switch]$Raw          # skip the installer's own environment reset and module imports (shows what an inherited module path does without them)
 )
 $ErrorActionPreference = 'Stop'
@@ -16,6 +17,25 @@ foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.La
 
 # what the installer itself does first: its own environment reset and explicit module imports (not autoloading), so an inherited module path
 # (for example PowerShell 7's, when this runs below a pwsh step of a workflow) cannot stop Get-Acl and friends from loading
+# a check's answer together with the warnings it gave as its reasons (so a failure on a machine nobody can look at explains itself)
+function Show-Trust($label, [scriptblock]$check) {
+    $out = @(& $check 3>&1)
+    $answer = $out | Where-Object { $_ -is [bool] } | Select-Object -Last 1
+    $why = ($out | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message.Trim() }) -join ' / '
+    "$label-trusted=$answer"
+    "$label-reason=$why"
+}
+
+function Describe-Acl($path, [switch]$Children) {
+    $items = @(Get-Item -LiteralPath $path -Force)
+    if ($Children) { $items += @(Get-ChildItem -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue) }
+    foreach ($i in $items) {
+        $sec = Get-Acl -LiteralPath $i.FullName
+        $name = if ($i.FullName -eq $path) { '.' } else { $i.FullName.Substring($path.Length).TrimStart('\') }
+        "acl[$name]=owner $($sec.GetOwner([Security.Principal.SecurityIdentifier]).Value); $($sec.Sddl)"
+    }
+}
+
 if (-not $Raw) {
     Set-SafeEnvironment
     Import-SystemModules @('Microsoft.PowerShell.Security')
@@ -82,17 +102,23 @@ switch ($Scenario) {
         try { Get-Acl -LiteralPath ([Environment]::SystemDirectory) | Out-Null; 'autoload=ok' } catch { 'autoload=failed' }
     }
     'acl-roundtrip' {
-        # Set-AdminOnlyAcl on a scratch folder, then the checks that follow it in the installer. Needs administrator rights (taking ownership);
-        # without them it says "skipped". On the hosted runner, which is an administrator, this is the positive control.
+        # Set-AdminOnlyAcl and Set-AdminOnlyTree on a scratch folder, then the checks that follow them in the installer. Needs an administrator
+        # (taking ownership): on a normal account it says "skipped". On an administrator account everything must work, and when it does not the
+        # output says why: the check's own reasons, the owner and the permission list of the folder and of everything in it.
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if (-not $isAdmin -and -not $ForceAdminScenarios) { 'skipped=1'; return }
         $d = Join-Path $Work 'canon'; New-Item -ItemType Directory -Force $d | Out-Null
-        try { Set-AdminOnlyAcl $d } catch { 'skipped=1'; return }
+        "me=$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+        try { Set-AdminOnlyAcl $d } catch { "error=Set-AdminOnlyAcl: $($_.Exception.Message)"; Describe-Acl $d; return }
         New-Item -ItemType Directory -Force (Join-Path $d 'sub') | Out-Null
         'x' | Set-Content (Join-Path $d 'sub\f.txt')
-        icacls "$d\*" /reset /T /C | Out-Null
-        "folder-trusted=$(Test-TrustedStateFolder $d 3>$null)"
-        "tree-trusted=$(Test-AdminOnlyTree $d 3>$null)"
+        'before-owner-fix:'; Describe-Acl $d -Children
+        Set-AdminOnlyTree $d
+        'after-owner-fix:'; Describe-Acl $d -Children
+        Show-Trust 'folder' { Test-TrustedStateFolder $d }
+        Show-Trust 'tree' { Test-AdminOnlyTree $d }
         icacls (Join-Path $d 'sub\f.txt') /grant '*S-1-5-32-545:(M)' | Out-Null
-        "tree-after-grant=$(Test-AdminOnlyTree $d 3>$null)"
+        Show-Trust 'tree-after-grant' { Test-AdminOnlyTree $d }
     }
     'trust-system' {
         "trusted=$(Test-TrustedStateFolder (Join-Path ([Environment]::SystemDirectory) 'drivers\etc') 3>$null)"

@@ -35,8 +35,11 @@ public class InstallerScriptTests
         var stdout = p.StandardOutput.ReadToEnd(); var stderr = p.StandardError.ReadToEnd();
         Assert.True(p.WaitForExit(120_000), "the child PowerShell did not finish");
         Assert.True(p.ExitCode == 0, $"exit {p.ExitCode}: {stdout} {stderr}");
-        return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(l => l.Contains('=')).ToDictionary(l => l[..l.IndexOf('=')], l => l[(l.IndexOf('=') + 1)..]);
+        var values = new Dictionary<string, string>();
+        foreach (var l in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Where(l => l.Contains('=')))
+            values[l[..l.IndexOf('=')]] = l[(l.IndexOf('=') + 1)..];
+        values["_raw"] = stdout;                                    // the scenario's whole output: put into assertion messages, so a failure on a runner explains itself
+        return values;
     }
 
     [Theory]
@@ -91,7 +94,7 @@ public class InstallerScriptTests
         using var sb = new Sandbox();
         var r = Run("install.ps1", "trust-users-writable", sb.Root);
         if (r == null) return;
-        Assert.Equal("False", r["trusted"]);
+        Assert.True(r["trusted"] == "False", r["_raw"]);
     }
 
     [Fact]
@@ -108,13 +111,16 @@ public class InstallerScriptTests
     public void TheInstallersOwnPermissionsAreTrustedAndAGrantBelowThemIsNot()
     {
         // needs administrator rights (it takes ownership for Administrators): on a normal account the scenario reports "skipped", on the
-        // hosted runner it is the positive control for Set-AdminOnlyAcl, Test-TrustedStateFolder and Test-AdminOnlyTree
+        // hosted runner it is the positive control for Set-AdminOnlyAcl, Set-AdminOnlyTree, Test-TrustedStateFolder and Test-AdminOnlyTree.
+        // Every assertion carries the scenario's output: the reasons the checks gave and the owner and SDDL of the folder and what is in it.
         using var sb = new Sandbox();
         var r = Run("install.ps1", "acl-roundtrip", sb.Root);
         if (r == null || r.ContainsKey("skipped")) return;
-        Assert.Equal("True", r["folder-trusted"]);
-        Assert.Equal("True", r["tree-trusted"]);
-        Assert.Equal("False", r["tree-after-grant"]);
+        string all = "\n--- scenario output ---\n" + r["_raw"];
+        Assert.False(r.ContainsKey("error"), "the installer's permission helper failed: " + r.GetValueOrDefault("error") + all);
+        Assert.True(r["folder-trusted"] == "True", "the folder the installer protected itself is judged untrusted: " + r["folder-reason"] + all);
+        Assert.True(r["tree-trusted"] == "True", "the tree the installer protected itself is judged untrusted: " + r["tree-reason"] + all);
+        Assert.True(r["tree-after-grant-trusted"] == "False", "a grant to Users below the folder was not noticed" + all);
     }
 
     [Fact]
