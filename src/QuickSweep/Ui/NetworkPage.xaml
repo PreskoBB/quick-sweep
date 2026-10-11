@@ -1,0 +1,40 @@
+<UserControl x:Class="QuickSweep.Ui.NetworkPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="clr-namespace:QuickSweep.Ui">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="30,24,30,28" MaxWidth="900" HorizontalAlignment="Left">
+            <TextBlock Text="Network" Style="{StaticResource PageTitle}"/>
+            <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,14" TextWrapping="Wrap" TextTrimming="None"
+                       Text="One small ping every few seconds to your router and to 1.1.1.1. If the lag is not your PC, this shows whether it is your network or the internet."/>
+
+            <Border Style="{StaticResource Card}" Padding="18,14">
+                <StackPanel>
+                    <TextBlock x:Name="Verdict" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                    <TextBlock x:Name="VerdictSub" Style="{StaticResource Caption}" Margin="0,3,0,0" TextWrapping="Wrap" TextTrimming="None"/>
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource Card}" Margin="0,8,0,0" Padding="18,14">
+                <StackPanel>
+                    <Grid>
+                        <TextBlock x:Name="RouterTitle" Text="Router" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock x:Name="RouterStats" Style="{StaticResource Caption}" HorizontalAlignment="Right"/>
+                    </Grid>
+                    <ui:LatencyChart x:Name="RouterChart" Height="120" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource Card}" Margin="0,8,0,0" Padding="18,14">
+                <StackPanel>
+                    <Grid>
+                        <TextBlock Text="Internet (1.1.1.1)" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock x:Name="NetStats" Style="{StaticResource Caption}" HorizontalAlignment="Right"/>
+                    </Grid>
+                    <ui:LatencyChart x:Name="NetChart" Height="120" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+            <TextBlock Style="{StaticResource Faint}" Margin="0,8,0,0" TextWrapping="Wrap" TextTrimming="None"
+                       Text="Last 10 minutes, one dot per ping. A spike is a reply slower than 100 ms or a lost packet (red marks at the bottom). During a game the same numbers go into the session summary."/>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

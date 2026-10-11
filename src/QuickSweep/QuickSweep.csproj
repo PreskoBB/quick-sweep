@@ -1,0 +1,46 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>QuickSweep</AssemblyName>
+    <RootNamespace>QuickSweep</RootNamespace>
+    <Version>1.0.0</Version>
+    <Authors>PreskoBB</Authors>
+    <Product>Quick Sweep</Product>
+    <Copyright>Copyright (c) 2026 PreskoBB. MIT license.</Copyright>
+    <!-- keep the build folder out of the embedded debug info, so a local build does not carry local paths -->
+    <!-- the elevated process must not load code named by environment variables the user can set (DOTNET_STARTUP_HOOKS) -->
+    <StartupHookSupport>false</StartupHookSupport>
+    <PathMap>$(MSBuildProjectDirectory)=/_/src/QuickSweep</PathMap>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\quicksweep.ico</ApplicationIcon>
+    <NoWarn>$(NoWarn);WPF0001;CA1416;CS8618;NU1701</NoWarn>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <ServerGarbageCollector>false</ServerGarbageCollector>
+    <TieredPGO>false</TieredPGO>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>embedded</DebugType>
+    <PublishReadyToRun>false</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="System.IO" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\quicksweep.ico" />
+  </ItemGroup>
+
+</Project>
+

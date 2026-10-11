@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- CPU burner for end-to-end tests of Game Mode. Built twice under different names: "ffmpeg" (a background job Game Mode
+       may slow down) and "loadgen" (load that is not background work, so Game Mode must leave it alone). -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>

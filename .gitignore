@@ -1,0 +1,9 @@
+bin/
+obj/
+dist/
+release/
+*.user
+.vs/
+TestResults/
+install.log
+*.log

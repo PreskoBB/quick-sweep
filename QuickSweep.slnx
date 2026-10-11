@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/QuickSweep/QuickSweep.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FakeGame/FakeGame.csproj" />
+    <Project Path="tests/QuickSweep.Tests/QuickSweep.Tests.csproj" />
+  </Folder>
+</Solution>
