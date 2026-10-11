@@ -39,6 +39,7 @@ public partial class SettingsPage : UserControl, IPage
         TbGameFolders.Text = Lines(s.ExtraGameFolders);
         TbBackground.Text = Lines(s.BackgroundProcesses); TbRuntimes.Text = Lines(s.ScriptRuntimes); TbAgents.Text = Lines(s.AgentApps);
         TbScan.Text = Lines(s.ExtraScanFolders.Select(f => f.ToString())); TbProtected.Text = Lines(s.ProtectedFolders);
+        UpdateProtectedWarnings(s.ProtectedFolders);
         BuiltInProtected.Text = string.Join(Environment.NewLine, QuickSweep.Core.Cleaner.PathGuard.BuiltInProtection.Select(x => "\u2022  " + x));
         var cpu = _mon.Cpu;
         if (Demo.On)
@@ -81,6 +82,28 @@ public partial class SettingsPage : UserControl, IPage
         s.ExtraScanFolders = Split(TbScan.Text).Select(ScanFolder.Parse).OfType<ScanFolder>().ToList();
         s.ProtectedFolders = Split(TbProtected.Text);
         s.Save();
+        UpdateProtectedWarnings(s.ProtectedFolders);
+    }
+
+    int _warnVersion;
+
+    /// <summary>Says, under the protected-folders box, which lines protect nothing (relative paths, unknown variables...) or match no folder right now.</summary>
+    void UpdateProtectedWarnings(IReadOnlyList<string> lines)
+    {
+        int version = ++_warnVersion;
+        if (lines.Count == 0) { ProtectedWarn.Visibility = Visibility.Collapsed; return; }
+        var copy = lines.ToList();
+        Task.Run(() => copy.Select(l => (line: l, check: QuickSweep.Core.Cleaner.PathGuard.CheckUserPattern(l)))
+                .Where(x => x.check.Error != null || x.check.Warning != null)
+                .Select(x => x.check.Error != null ? $"Ignored, it protects nothing: {x.line}\n      {x.check.Error}" : $"Note: {x.line}\n      {x.check.Warning}")
+                .ToList())
+            .ContinueWith(t => Dispatcher.BeginInvoke(() =>
+            {
+                if (version != _warnVersion || t.IsFaulted) return;
+                ProtectedWarn.Text = string.Join("\n", t.Result);
+                ProtectedWarn.Foreground = Palette.Warn;
+                ProtectedWarn.Visibility = t.Result.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            }));
     }
 
     static string StripExe(string n) => n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? n[..^4] : n;

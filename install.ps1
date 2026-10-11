@@ -33,6 +33,46 @@ param(
     [switch]$KeepOldData
 )
 $ErrorActionPreference = 'Stop'
+
+# The environment of an elevated process contains the user's own variables (HKCU\Environment), which any normal program can change:
+# ProgramFiles, ProgramData, PATH, PSModulePath... Nothing below trusts them. Locations come from Windows' known folders
+# (SHGetKnownFolderPath, GetSystemDirectory), native tools are found in System32 only, and PowerShell modules load from the
+# system folders only, so a variable set by a user-level program cannot point this elevated script at a folder or program it controls.
+$sysDir = [Environment]::SystemDirectory
+$env:Path = @($sysDir, (Split-Path $sysDir -Parent), (Join-Path $sysDir 'Wbem'), (Join-Path $sysDir 'WindowsPowerShell\v1.0')) -join ';'
+$env:PSModulePath = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'WindowsPowerShell\Modules') + ';' + (Join-Path $sysDir 'WindowsPowerShell\v1.0\Modules')
+
+function Get-KnownLocations {
+    @{
+        System       = [Environment]::SystemDirectory
+        ProgramFiles = [Environment]::GetFolderPath('ProgramFiles')
+        ProgramData  = [Environment]::GetFolderPath('CommonApplicationData')
+        # not GetFolderPath('CommonStartMenu'): that one expands %ProgramData% from the environment. ProgramData itself does not.
+        StartMenu    = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'Microsoft\Windows\Start Menu\Programs'
+        UserProfile  = [Environment]::GetFolderPath('UserProfile')
+    }
+}
+
+# True when $path (after '..' and relative parts are resolved) lies inside $dir.
+function Test-UnderDirectory($path, $dir) {
+    $p = [IO.Path]::GetFullPath($path)
+    $d = [IO.Path]::GetFullPath($dir).TrimEnd('\') + '\'
+    return $p.StartsWith($d, [StringComparison]::OrdinalIgnoreCase)
+}
+
+# winget lives in a per-user alias folder that a normal program can write to, so it is never run through PATH: the package's own folder
+# below Program Files\WindowsApps is looked up instead (needs the elevation this script already has). $null when it cannot be found.
+function Get-WingetPath($programFiles) {
+    try {
+        $pkg = Get-AppxPackage -AllUsers -Name Microsoft.DesktopAppInstaller -ErrorAction Stop | Sort-Object Version -Descending | Select-Object -First 1
+        if ($pkg) {
+            $exe = Join-Path $pkg.InstallLocation 'winget.exe'
+            if ((Test-Path -LiteralPath $exe) -and (Test-UnderDirectory $exe (Join-Path $programFiles 'WindowsApps'))) { return $exe }
+        }
+    } catch { }
+    return $null
+}
+
 # Windows PowerShell 5.1 leaves $PSScriptRoot empty in param defaults, so resolve the folder here.
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 # the release zip keeps the program in .\app, a source checkout publishes to .\dist (build.ps1)
@@ -48,27 +88,31 @@ if (-not (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Securit
     throw 'Run this script from an elevated PowerShell (right-click PowerShell > Run as administrator).'
 }
 
+$loc          = Get-KnownLocations
+$programFiles = $loc.ProgramFiles
+$programData  = $loc.ProgramData
 $taskName   = 'QuickSweep'
-$installDir = Join-Path $env:ProgramFiles 'QuickSweep'
+$installDir = Join-Path $programFiles 'QuickSweep'
 $exe        = Join-Path $installDir 'QuickSweep.exe'
-$lnk        = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Quick Sweep.lnk'
+$lnk        = Join-Path $loc.StartMenu 'Quick Sweep.lnk'
 $state      = Join-Path $installDir 'install-state.json'
-$dataDir    = Join-Path $env:ProgramData 'QuickSweep'
+$dataDir    = Join-Path $programData 'QuickSweep'
 $user       = $id.Name
 $adminSids  = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
 
 # the earlier name of this program
 $oldTask    = 'PcCare'
-$oldInstall = Join-Path $env:ProgramFiles 'PcCare'
-$oldData    = Join-Path $env:ProgramData 'PcCare'
-$oldLnk     = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\PC Care.lnk'
-$oldUserDir = Join-Path $env:LOCALAPPDATA 'PcCare'
+$oldInstall = Join-Path $programFiles 'PcCare'
+$oldData    = Join-Path $programData 'PcCare'
+$oldLnk     = Join-Path $loc.StartMenu 'PC Care.lnk'
+$oldUserDir = Join-Path (Join-Path $loc.UserProfile 'AppData\Local') 'PcCare'
 
 function Test-Link($p) { [bool]((Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue).Attributes -band [IO.FileAttributes]::ReparsePoint) }
 
 # The trust test the app applies to its own state folder: not a link; owned by SYSTEM, Administrators or TrustedInstaller; nobody else
 # may write, delete or re-permission it; nothing directly inside is a link or belongs to somebody else.
 function Test-TrustedStateFolder($dir) {
+    $adminSids = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
     if (-not (Test-Path -LiteralPath $dir)) { return $false }
     if (Test-Link $dir) { Write-Warning "      $dir is a junction or symbolic link"; return $false }
     $sec = Get-Acl -LiteralPath $dir
@@ -77,6 +121,7 @@ function Test-TrustedStateFolder($dir) {
     $writeLike = [int][Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
     foreach ($r in $sec.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
         if ($r.AccessControlType -ne 'Allow' -or $adminSids -contains $r.IdentityReference.Value) { continue }
+        if ($r.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) { continue }   # CREATOR OWNER and the like: not this folder
         if (([int]$r.FileSystemRights -band $writeLike) -ne 0) { Write-Warning "      $dir lets $($r.IdentityReference.Value) change it ($($r.FileSystemRights))"; return $false }
     }
     foreach ($e in Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue) {
@@ -133,14 +178,17 @@ if (Test-Path $state) { try { $old = Get-Content $state -Raw | ConvertFrom-Json 
 # an install of the earlier name knows whether it was the one that installed PawnIO: keep that fact, so uninstall stays correct
 $oldState = Join-Path $oldInstall 'install-state.json'
 if (-not $old -and (Test-Path -LiteralPath $oldState) -and -not (Test-Link $oldInstall)) { try { $old = Get-Content -LiteralPath $oldState -Raw | ConvertFrom-Json } catch { } }
+if (-not (Test-UnderDirectory $exe $programFiles)) { throw "$exe is not below the real Program Files folder ($programFiles)." }
 New-Item -ItemType Directory -Force $installDir | Out-Null
+# the folder the elevated task will run from must be writable by administrators only: refuse otherwise (nothing has been copied yet)
+if (-not (Test-TrustedStateFolder $installDir)) { throw "$installDir is not an administrators-only folder (see the warning above), so Quick Sweep will not be installed into it." }
 robocopy $Source $installDir /MIR /NFL /NDL /NJH /NJS /NP /XF install-state.json | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed with code $LASTEXITCODE" }
 # files from a downloaded zip carry the "downloaded from the internet" mark; the copy in Program Files should not
 Get-ChildItem $installDir -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 
 # --- .NET 10 Desktop Runtime (the app is built against it, not bundled) ------------------------------
-$hasRuntime = [bool](Get-ChildItem (Join-Path $env:ProgramFiles 'dotnet\shared\Microsoft.WindowsDesktop.App') -Directory -Filter '10.*' -ErrorAction SilentlyContinue)
+$hasRuntime = [bool](Get-ChildItem (Join-Path $programFiles 'dotnet\shared\Microsoft.WindowsDesktop.App') -Directory -Filter '10.*' -ErrorAction SilentlyContinue)
 if (-not $hasRuntime) {
     Write-Host '      The .NET 10 Desktop Runtime is not installed (Quick Sweep needs it).'
     $go = $Yes
@@ -148,8 +196,9 @@ if (-not $hasRuntime) {
         $a = Read-Host '      Install it now from Microsoft through winget (Microsoft.DotNet.DesktopRuntime.10)? [Y/n]'
         $go = ($a -eq '' -or $a -match '^(y|yes)$')
     }
-    if ($go -and (Get-Command winget -ErrorAction SilentlyContinue)) {
-        winget install --id Microsoft.DotNet.DesktopRuntime.10 -e --silent --accept-package-agreements --accept-source-agreements
+    $winget = Get-WingetPath $programFiles
+    if ($go -and $winget) {
+        & $winget install --id Microsoft.DotNet.DesktopRuntime.10 -e --silent --accept-package-agreements --accept-source-agreements
         if ($LASTEXITCODE -ne 0) { Write-Warning "      The runtime install did not complete (winget exit code $LASTEXITCODE). Install it from https://dotnet.microsoft.com/download/dotnet/10.0 and run this script again." }
     } else {
         Write-Warning '      Install the .NET 10 Desktop Runtime from https://dotnet.microsoft.com/download/dotnet/10.0 (x64), then start Quick Sweep from the Start menu.'
@@ -217,10 +266,11 @@ if ($SkipSensorDriver) {
         $go = ($a -eq '' -or $a -match '^(y|yes)$')
     }
     if ($go) {
-        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-            Write-Warning '      winget not found. Install PawnIO manually from https://pawnio.eu then re-run, or use -SkipSensorDriver.'
+        $winget = Get-WingetPath $programFiles
+        if (-not $winget) {
+            Write-Warning '      winget was not found in its package folder. Install PawnIO manually from https://pawnio.eu then re-run, or use -SkipSensorDriver.'
         } else {
-            winget install --id namazso.PawnIO -e --silent --accept-package-agreements --accept-source-agreements
+            & $winget install --id namazso.PawnIO -e --silent --accept-package-agreements --accept-source-agreements
             if ($LASTEXITCODE -eq 0 -and (Get-Service -Name PawnIO -ErrorAction SilentlyContinue)) {
                 $weInstalledDriver = $true
                 Write-Host '      installed.'
@@ -237,7 +287,7 @@ if ($SkipSensorDriver) {
 # --- optional: merge a settings file (same code as Settings > Import), before the task starts ------------------
 if ($ImportSettings) {
     Write-Host "      Merging settings from $ImportSettings ..."
-    if (-not (Get-ChildItem (Join-Path $env:ProgramFiles 'dotnet\shared\Microsoft.WindowsDesktop.App') -Directory -Filter '10.*' -ErrorAction SilentlyContinue)) {
+    if (-not (Get-ChildItem (Join-Path $programFiles 'dotnet\shared\Microsoft.WindowsDesktop.App') -Directory -Filter '10.*' -ErrorAction SilentlyContinue)) {
         Write-Warning '      The .NET 10 Desktop Runtime is missing, so Quick Sweep cannot run the import. Install it, then import the file from Settings > Import settings.'
         $imp = $null
     } else {
@@ -265,6 +315,13 @@ $settings  = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -Dont
              -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
     -Description 'Quick Sweep tray utility (temperatures, Game Mode, disk and memory care). Runs elevated for sensors.' -Force | Out-Null
+
+# what the elevated task will run must be this program, below the real Program Files (read back, not assumed)
+$registered = (Get-ScheduledTask -TaskName $taskName).Actions | Select-Object -First 1
+if (-not $registered -or $registered.Execute -ne $exe -or -not (Test-UnderDirectory $registered.Execute ([Environment]::GetFolderPath('ProgramFiles')))) {
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    throw "The logon task does not point at $exe below Program Files (it says '$($registered.Execute)'); it was removed. Nothing runs elevated at logon."
+}
 
 # --- shortcut --------------------------------------------------------------------
 Write-Host '[5/5] Start-menu shortcut...'

@@ -1,13 +1,13 @@
 <#
  Packs the release zip from an already published .\dist (run build.ps1 first):
 
-   QuickSweep-1.0.0.zip
+   QuickSweep-1.0.1.zip
      Install Quick Sweep.bat   double-click: asks for admin, then runs install.ps1
      install.ps1  uninstall.ps1
      README.txt  LICENSE  THIRD-PARTY-NOTICES.md  licenses\
      app\                  the published program
 
-   .\tools\package.ps1 -Version 1.0.0
+   .\tools\package.ps1 -Version 1.0.1
 #>
 [CmdletBinding()]
 param(

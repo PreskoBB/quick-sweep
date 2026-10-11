@@ -45,7 +45,11 @@ public sealed class PathGuard
     };
 
     /// <param name="extraPatterns">Folders the user added (see <see cref="AppSettings.ProtectedFolders"/>).</param>
-    public PathGuard(IEnumerable<string> extraPatterns)
+    public PathGuard(IEnumerable<string> extraPatterns) : this(extraPatterns, null) { }
+
+    /// <param name="userFolders">Documents, Desktop, Pictures, Videos, Music, Downloads and OneDrive wherever they really live
+    /// (null: <see cref="TrustedPaths.UserFolders"/>). A folder moved to another drive is protected there, not only under the profile.</param>
+    internal PathGuard(IEnumerable<string> extraPatterns, IEnumerable<string>? userFolders)
     {
         // from Windows' own records, not from environment variables (see TrustedPaths)
         string win = TrustedPaths.Windows, pf = TrustedPaths.ProgramFiles, pf86 = TrustedPaths.ProgramFilesX86, pd = TrustedPaths.ProgramData;
@@ -54,13 +58,9 @@ public sealed class PathGuard
         _systemDrive = Path.GetPathRoot(win) ?? @"C:\";
 
         foreach (var z in new[] { win, pf, pf86, pd }) if (!string.IsNullOrEmpty(z)) _zones.Add(Normalize(z));
-        foreach (var k in new[]
-        {
-            Environment.SpecialFolder.MyDocuments, Environment.SpecialFolder.Desktop, Environment.SpecialFolder.MyPictures,
-            Environment.SpecialFolder.MyVideos, Environment.SpecialFolder.MyMusic
-        }) { var p = Environment.GetFolderPath(k); if (!string.IsNullOrEmpty(p)) _zones.Add(Normalize(p)); }
-        _zones.Add(Normalize(Path.Combine(profile, "Downloads")));
-        _zones.Add(Normalize(Path.Combine(profile, "OneDrive")));
+        // the personal folders of the interactive user: where Windows says they are (a Downloads folder moved to another drive is
+        // protected there) and, always, their default places below the profile
+        foreach (var f in userFolders ?? TrustedPaths.UserFolders) if (!string.IsNullOrWhiteSpace(f)) _zones.Add(Normalize(f));
         _zones.Add(Normalize(Path.Combine(local, "QuickSweep")));
         // other known-folder style patterns
         AddPattern(@"*:\Users\*\Documents");
@@ -102,10 +102,72 @@ public sealed class PathGuard
         AddPattern(@"**\.git");
 
         // folders the user added: environment variables work (%USERPROFILE%\Work), * works inside a folder name, ** means any depth
-        foreach (var p in _user) AddPattern(TrustedPaths.Expand(p));
+        // a pattern that cannot match anything (relative, a stray variable...) is skipped loudly rather than "protecting" nothing in silence
+        foreach (var p in _user)
+        {
+            var check = CheckUserPattern(p, checkExistence: false);
+            if (check.Error != null) { WarnOnce($"protected folder '{p}' ignored: {check.Error}"); continue; }
+            AddPattern(check.Pattern);
+        }
     }
 
     public IReadOnlyList<string> PatternText => _patternText;
+
+    static readonly HashSet<string> Warned = new(StringComparer.OrdinalIgnoreCase);
+    static void WarnOnce(string text) { lock (Warned) { if (Warned.Add(text)) Log.Write(text); } }
+
+    /// <param name="Raw">as the user typed it</param>
+    /// <param name="Pattern">trusted variables filled in, slashes normalised: what is actually matched</param>
+    /// <param name="Error">set when the pattern cannot protect anything and is ignored</param>
+    /// <param name="Warning">set when it is fine but matches no folder right now</param>
+    public readonly record struct PatternCheck(string Raw, string Pattern, string? Error, string? Warning);
+
+    /// <summary>
+    /// Judges one protected-folder pattern the way the guard will read it. Patterns are full paths: a drive letter (or * or ? for any
+    /// drive), then folder names where * stands for part of a name, ? for one character and ** for any number of folders. A relative path,
+    /// a bare folder name, a network path or a stray %VARIABLE% can never match a real path, so it is an error (the line is ignored and
+    /// Settings says so) instead of a protection that silently does nothing.
+    /// </summary>
+    public static PatternCheck CheckUserPattern(string? raw, bool checkExistence = true)
+    {
+        raw ??= "";
+        string p = TrustedPaths.Expand(raw.Trim().Trim('"').Trim()).Replace('/', '\\');
+        PatternCheck Bad(string why) => new(raw, p, why, null);
+        if (p.Length == 0) return Bad("empty line");
+        if (p.Contains('%')) return Bad("contains a %variable% that Quick Sweep does not know (only %LOCALAPPDATA%, %APPDATA%, %USERPROFILE%, %TEMP%, %ProgramData%, %SystemRoot% and %ProgramFiles% work)");
+        if (p.StartsWith(@"\\", StringComparison.Ordinal)) return Bad("network paths are never cleaned, so there is nothing to protect there; use a drive path");
+        bool drive = p.Length >= 3 && (char.IsLetter(p[0]) || p[0] == '*' || p[0] == '?') && p[1] == ':' && p[2] == '\\';
+        if (!drive) return Bad(@"not a full path. Start with a drive letter and a backslash, for example D:\Important (a relative path or a bare folder name matches nothing)");
+        if (p.IndexOfAny(new[] { '<', '>', '"', '|' }) >= 0 || p.IndexOf(':', 2) >= 0) return Bad("contains characters that cannot be part of a path");
+        var segs = p.Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        if (segs.Any(s => s is "." or "..")) return Bad("'.' and '..' are not allowed");
+        string? warn = null;
+        if (checkExistence && !MatchesAnyExisting(p, segs)) warn = "no folder matches it right now. It will protect one if it appears later, so check the spelling";
+        return new PatternCheck(raw, p, null, warn);
+    }
+
+    static bool MatchesAnyExisting(string pattern, string[] segs)
+    {
+        try
+        {
+            // a trailing ** only means "and everything below": the folder before it is what has to exist
+            var list = segs.ToList();
+            while (list.Count > 1 && list[^1] == "**") list.RemoveAt(list.Count - 1);
+            var drives = list[0].IndexOfAny(new[] { '*', '?' }) >= 0
+                ? DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed && d.IsReady).Select(d => d.Name[..2]).ToList()
+                : new List<string> { list[0] };
+            foreach (var d in drives)
+            {
+                var concrete = d + "\\" + string.Join("\\", list.Skip(1));
+                bool wild = list.Skip(1).Any(s => s.IndexOfAny(new[] { '*', '?' }) >= 0);
+                if (list.Count == 1) { if (Directory.Exists(d + "\\")) return true; continue; }
+                if (!wild) { if (Directory.Exists(concrete) || File.Exists(concrete)) return true; continue; }
+                if (PatternScan.Expand(concrete).Count > 0) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
 
     void AddPattern(string pattern, bool exactOnly = false)
     {
@@ -116,7 +178,7 @@ public sealed class PathGuard
         {
             if (i > 0) sb.Append(@"\\");
             if (segs[i] == "**") sb.Append(@"(?:[^\\]+\\)*[^\\]+"); // one or more segments
-            else sb.Append(Regex.Escape(segs[i]).Replace(@"\*", @"[^\\]*"));
+            else sb.Append(Regex.Escape(segs[i]).Replace(@"\*", @"[^\\]*").Replace(@"\?", @"[^\\]"));   // * = any part of a name, ? = one character
         }
         if (exactOnly)
         {

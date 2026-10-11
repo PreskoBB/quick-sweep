@@ -77,6 +77,73 @@ public static class TrustedPaths
         return Var.Replace(text, m => known.TryGetValue(m.Groups[1].Value, out var v) ? v : m.Value);
     }
 
+    // ---- the user's personal folders, wherever they live --------------------------------------------------------------------
+    [DllImport("shell32.dll")] static extern int SHGetKnownFolderPath(ref Guid id, uint flags, nint token, out nint path);
+    [DllImport("ole32.dll")] static extern void CoTaskMemFree(nint p);
+
+    /// <summary>The known folders that hold a person's own files (KNOWNFOLDERID values from the Windows SDK).</summary>
+    internal static readonly (string Name, Guid Id)[] PersonalFolderIds =
+    {
+        ("Documents", new Guid("FDD39AD0-238F-46AF-ADB4-6C85480369C7")),
+        ("Desktop", new Guid("B4BFCC3A-DB2C-424C-B029-7FE99A87C641")),
+        ("Pictures", new Guid("33E28130-4E1E-4676-835A-98395C3BC3BB")),
+        ("Videos", new Guid("18989B1D-99B5-455B-841C-AB7C74E4DDFC")),
+        ("Music", new Guid("4BD8D571-6D19-48D3-BE97-422220080E43")),
+        ("Downloads", new Guid("374DE290-123F-4565-9164-39C4925E467B")),
+        ("OneDrive", new Guid("A52BBA46-E9E1-435F-B3D9-28DAA648C0F6")),
+    };
+
+    /// <summary>One known folder of the user behind <paramref name="token"/> (0: the user of this process), without creating or verifying it.</summary>
+    internal static string? KnownFolder(Guid id, nint token)
+    {
+        try
+        {
+            if (SHGetKnownFolderPath(ref id, 0x4000 /* KF_FLAG_DONT_VERIFY */, token, out var p) != 0 || p == 0) return null;
+            try { return Marshal.PtrToStringUni(p); } finally { CoTaskMemFree(p); }
+        }
+        catch { return null; }
+    }
+
+    static IReadOnlyList<string>? _userFolders;
+
+    /// <summary>
+    /// Documents, Desktop, Pictures, Videos, Music, Downloads and OneDrive of the interactive user, where Windows says they are (a folder
+    /// that was moved to another drive is listed there) plus their default places below the profile. For the user of this process and for
+    /// the user of the desktop shell, which differ when the process was elevated with another account's credentials.
+    /// </summary>
+    public static IReadOnlyList<string> UserFolders => _userFolders ??= ComputeUserFolders(KnownFolder, ShellToken.OpenImpersonation, ShellToken.Close);
+
+    internal static List<string> ComputeUserFolders(Func<Guid, nint, string?> resolve, Func<nint> openShellToken, Action<nint> closeToken)
+    {
+        var found = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string profile = Profile, local = Local;
+        void Add(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            string norm;
+            try { norm = SafeIo.Normalize(path.Trim()); } catch { return; }
+            if (norm.Length < 4 || norm.StartsWith(@"\\", StringComparison.Ordinal)) return;           // a drive root or a network path is not a personal folder
+            // a "personal folder" that is the profile or contains AppData would protect far too much (and block the temp cleaner): ignore it
+            if (norm.Equals(profile, StringComparison.OrdinalIgnoreCase) || profile.StartsWith(norm + "\\", StringComparison.OrdinalIgnoreCase) ||
+                local.StartsWith(norm + "\\", StringComparison.OrdinalIgnoreCase)) return;
+            if (seen.Add(norm)) found.Add(norm);
+        }
+        nint shell = 0;
+        try { shell = openShellToken(); } catch { }
+        try
+        {
+            foreach (var (name, id) in PersonalFolderIds)
+            {
+                Add(resolve(id, 0));                                                                   // this process's user
+                if (shell != 0) Add(resolve(id, shell));                                                // the user of the desktop shell
+                Add(Path.Combine(profile, name));                                                      // and the default place, always
+            }
+        }
+        finally { if (shell != 0) closeToken(shell); }
+        return found;
+    }
+
     // ---- cache folders named by environment variables ------------------------------------------------------------------
     static readonly SecurityIdentifier AdminsSid = new(WellKnownSidType.BuiltinAdministratorsSid, null);
 
