@@ -40,7 +40,7 @@ More pictures in [`docs/screenshots`](docs/screenshots): sessions, startup apps,
 - **Game flag file.** While a game runs, `%ProgramData%\QuickSweep\public\gaming.json` exists (a plain, non-elevated run uses `%LOCALAPPDATA%\QuickSweep\public\gaming.json`): `{"game": "Some Game", "exe": "SomeGame.exe", "since": "2026-10-11T21:14:03+03:00", "pid": 4242}`. It is deleted when the game closes, at start-up and on exit, so it is never stale. Other programs can look for it and put off heavy work, for example in PowerShell: `if (Test-Path "$env:ProgramData\QuickSweep\public\gaming.json") { "wait" }`.
 - **After-game summary** (one entry per game, the last 20 are shown on the Sessions page): duration, peak and average CPU and GPU temperature, peak loads, peak RAM and VRAM, whether anything throttled, router and internet ping spikes, and what Game Mode did. Sessions under a minute are ignored.
 
-**Alerts, only when something is really wrong** (never a sound, never repeated within three hours): CPU over 90 °C or GPU over 83 °C for a sustained stretch, low free space on C:, an app whose memory climbs steadily (a leak), Windows kernel memory ballooning, a drive that is failing or getting worse. During a game they are held back and shown after it ends.
+**Alerts, only when something is really wrong** (never a sound, never repeated within three hours): CPU over 90 °C or GPU over 83 °C for a sustained stretch, low free space on C:, an app whose memory climbs steadily (a leak), Windows kernel memory ballooning while memory is also short (a large kernel pool with plenty of free RAM is only cache; the limits are in Settings), a drive that is failing or getting worse. A drive with old damage that has not grown, or a cable problem, shows as a quiet note in the flyout without a notification. Click an alert in the flyout to open the page that explains it. During a game they are held back and shown after it ends.
 
 **Memory explained**: physical memory split into apps, Windows kernel, compressed, other, modified, standby cache and free, each with a plain-words description; committed memory against the commit limit; the biggest kernel pool users by tag (needs admin).
 
@@ -50,7 +50,7 @@ More pictures in [`docs/screenshots`](docs/screenshots): sessions, startup apps,
 
 **Disk cleaner**: a "safe to clean" list with sizes per category, and a sortable folder tree with a treemap. See the safety rules below.
 
-**Drive health**: SMART status, wear, temperature, reallocated, pending and uncorrectable sectors, power-on time and written TB for SATA drives, and a warning when a drive gets worse compared with its remembered baseline. NVMe and USB-bridged drives are listed, but their SMART is not read in this version.
+**Drive health**: SMART status, wear, temperature, reallocated, pending and uncorrectable sectors, power-on time and written TB for SATA drives, and a comparison with the remembered baseline: a reallocated-sector count that has stayed the same is only a warning ("old damage, keep a backup"), a count that grows, or any pending or uncorrectable sector, is critical. Many interface (CRC) errors point at the SATA cable, not the drive: a warning, critical only while the count is still rising. NVMe and USB-bridged drives are listed, but their SMART is not read in this version.
 
 **Network**: one ICMP packet every 3 seconds to your default gateway and to 1.1.1.1, with latency, loss, spikes and a verdict: your network, the internet, or neither.
 

@@ -22,13 +22,19 @@
                     <TextBlock Text="Alert limits" Style="{StaticResource SectionTitle}"/>
                     <Grid Margin="0,12,0,0">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <TextBlock Text="CPU temperature above (°C)" Style="{StaticResource Body}" VerticalAlignment="Center" Margin="0,0,0,8"/>
                         <TextBox x:Name="TbCpu" Grid.Column="1" Margin="0,0,0,8" LostFocus="OnChanged"/>
                         <TextBlock Text="GPU temperature above (°C)" Grid.Row="1" Style="{StaticResource Body}" VerticalAlignment="Center" Margin="0,0,0,8"/>
                         <TextBox x:Name="TbGpu" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" LostFocus="OnChanged"/>
-                        <TextBlock Text="Free space below (GB)" Grid.Row="2" Style="{StaticResource Body}" VerticalAlignment="Center"/>
-                        <TextBox x:Name="TbSpace" Grid.Row="2" Grid.Column="1" LostFocus="OnChanged"/>
+                        <TextBlock Text="Free space below (GB)" Grid.Row="2" Style="{StaticResource Body}" VerticalAlignment="Center" Margin="0,0,0,8"/>
+                        <TextBox x:Name="TbSpace" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8" LostFocus="OnChanged"/>
+                        <TextBlock Text="Kernel memory alert: pool at or above (GB)" Grid.Row="3" Style="{StaticResource Body}" VerticalAlignment="Center" Margin="0,0,0,8"/>
+                        <TextBox x:Name="TbPool" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" LostFocus="OnChanged"/>
+                        <TextBlock Text="... and available RAM below (GB)" Grid.Row="4" Style="{StaticResource Body}" VerticalAlignment="Center" Margin="0,0,0,8"/>
+                        <TextBox x:Name="TbPoolRam" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" LostFocus="OnChanged"/>
+                        <TextBlock Text="... or committed memory above (%)" Grid.Row="5" Style="{StaticResource Body}" VerticalAlignment="Center"/>
+                        <TextBox x:Name="TbPoolCommit" Grid.Row="5" Grid.Column="1" LostFocus="OnChanged"/>
                     </Grid>
                 </StackPanel>
             </Border>

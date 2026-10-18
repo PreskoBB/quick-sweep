@@ -11,6 +11,10 @@ namespace QuickSweep.Core;
 public static class Demo
 {
     public static bool On { get; set; }
+    /// <summary><c>--demo-problem</c>: the sample hard disk has old damage and the sample SSD a cable problem (flyout banner, Drive health page).</summary>
+    public static bool Problem { get; set; }
+    /// <summary><c>--demo-problem=worse</c>: the remembered numbers are lower than the current ones, so the damage is growing (red banner).</summary>
+    public static bool Worse { get; set; }
 
     const long GB = 1024L * 1024 * 1024;
     const long MB = 1024L * 1024;
@@ -113,6 +117,26 @@ public static class Demo
 
     // ---- drive health ----------------------------------------------------------------------------------------------
     public static List<DriveReport> Health()
+    {
+        var list = HealthyDrives();
+        if (!Problem) return list;
+        var ssd = list[0]; var hdd = list[1];
+        ssd.CrcErrors = 786451; ssd.Attrs.First(a => a.Id == 199).Raw = 786451;
+        hdd.Reallocated = 296; hdd.Attrs.First(a => a.Id == 5).Raw = 296;
+        return list;
+    }
+
+    /// <summary>Remembered numbers eleven days old that match <see cref="Health"/> in problem mode: the damage has not grown since.</summary>
+    public static void SeedHealthBaseline()
+    {
+        var then = DateTime.Now.AddDays(-11);
+        var store = new BaselineStore();
+        store.Drives["Sample SATA SSD 1TB"] = new DriveBaseline { CrcErrors = 786451, CrcSince = then, LifeLeftPct = 97, Since = then };
+        store.Drives["Sample hard disk 2TB"] = new DriveBaseline { Reallocated = Worse ? 290 : 296, CrcErrors = 0, CrcSince = then, Since = then };
+        JsonStore.Save("drivehealth.json", store);
+    }
+
+    static List<DriveReport> HealthyDrives()
     {
         SmartAttr A(int id, string name, int v, int w, int t, long raw) => new() { Id = id, Name = name, Value = v, Worst = w, Threshold = t, Raw = raw };
         return new()

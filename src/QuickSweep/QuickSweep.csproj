@@ -9,7 +9,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>QuickSweep</AssemblyName>
     <RootNamespace>QuickSweep</RootNamespace>
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <Authors>PreskoBB</Authors>
     <Product>Quick Sweep</Product>
     <Copyright>Copyright (c) 2026 PreskoBB. MIT license.</Copyright>

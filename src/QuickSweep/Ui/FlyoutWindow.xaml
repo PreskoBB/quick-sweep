@@ -27,12 +27,22 @@
             <ItemsControl x:Name="AlertList" Margin="0,10,0,0">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <Border Background="#3A2F14" BorderBrush="#6B5420" BorderThickness="1" CornerRadius="8" Padding="10,8" Margin="0,0,0,6">
+                        <Border x:Name="Banner" Background="#3A2F14" BorderBrush="#6B5420" BorderThickness="1" CornerRadius="8" Padding="10,8" Margin="0,0,0,6"
+                                Cursor="Hand" Tag="{Binding}" MouseLeftButtonUp="OnAlertClick" ToolTip="{Binding Detail}">
                             <StackPanel>
-                                <TextBlock Text="{Binding Title}" Foreground="{StaticResource WarnBrush}" FontWeight="SemiBold" FontSize="13"/>
-                                <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" TextWrapping="Wrap" TextTrimming="None" Margin="0,2,0,0"/>
+                                <TextBlock x:Name="BannerTitle" Text="{Binding Title}" Foreground="{StaticResource WarnBrush}" FontWeight="SemiBold" FontSize="13"
+                                           TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding Detail}" Style="{StaticResource Caption}" Foreground="#D9D2BF" TextWrapping="Wrap"
+                                           TextTrimming="CharacterEllipsis" MaxHeight="34" Margin="0,2,0,0"/>
                             </StackPanel>
                         </Border>
+                        <DataTemplate.Triggers>
+                            <DataTrigger Binding="{Binding IsCritical}" Value="True">
+                                <Setter TargetName="Banner" Property="Background" Value="#4D2328"/>
+                                <Setter TargetName="Banner" Property="BorderBrush" Value="#8A3A40"/>
+                                <Setter TargetName="BannerTitle" Property="Foreground" Value="{StaticResource BadBrush}"/>
+                            </DataTrigger>
+                        </DataTemplate.Triggers>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>

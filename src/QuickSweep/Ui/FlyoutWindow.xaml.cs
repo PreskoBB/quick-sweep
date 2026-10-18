@@ -46,6 +46,7 @@ public partial class FlyoutWindow : Window
     bool _updatePending;
     DateTime _lastAppsRefresh = DateTime.MinValue;
     bool _refreshingApps;
+    string _alertSig = "";
     bool _taskbarTop; double _topDip, _bottomDip;
 
     public FlyoutWindow(SystemMonitor mon, Action<string?> openMain)
@@ -219,7 +220,9 @@ public partial class FlyoutWindow : Window
 
         // alerts
         var alerts = _mon.Alerts.Active;
-        AlertList.ItemsSource = alerts.Count == 0 ? null : alerts;
+        // rebuild the banners only when something changed: a click must not land on an item that was just replaced
+        string sig = string.Join("\n", alerts.Select(a => $"{a.Key}|{a.Title}|{a.Detail}|{a.Level}|{a.Page}"));
+        if (sig != _alertSig) { _alertSig = sig; AlertList.ItemsSource = alerts.Count == 0 ? null : alerts; }
         AlertList.Visibility = alerts.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (alerts.Count == 0) { StatusPill.Background = Palette.Frozen("#223A2A"); StatusDot.Fill = Palette.Good; T(StatusText, "All good"); }
         else { StatusPill.Background = Palette.Frozen("#4A3A16"); StatusDot.Fill = Palette.Warn; T(StatusText, alerts.Count == 1 ? "1 issue" : $"{alerts.Count} issues"); }
@@ -298,6 +301,15 @@ public partial class FlyoutWindow : Window
     {
         _mon.SetGameMode(GameSwitch.IsChecked == true);
         Render(_mon.Latest, false);
+    }
+
+    /// <summary>A click on an alert banner opens the page that explains it (Drive health for a drive alert).</summary>
+    void OnAlertClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not Alert a) return;
+        HideFlyout();
+        _openMain(a.Page);
+        e.Handled = true;
     }
 
     void OnOpenMain(object sender, RoutedEventArgs e) { HideFlyout(); _openMain(null); }

@@ -55,6 +55,10 @@ public sealed class AppSettings
     public int CpuAlertC { get; set; } = 90;
     public int GpuAlertC { get; set; } = 83;
     public int LowSpaceGb { get; set; } = 10;
+    // kernel memory: alert only when the pool is large AND the PC is short of memory
+    public double PoolAlertGb { get; set; } = 6.0;              // a pool at or above this counts as large
+    public double PoolPressureFreeRamGb { get; set; } = 2.0;    // ... and available RAM is under this
+    public int PoolPressureCommitPct { get; set; } = 90;        // ... or commit charge is above this share of the limit
 
     // game detection: extra folders whose executables count as games (Steam, Epic, GOG, Riot, Ubisoft, EA and Xbox are built in)
     public List<string> ExtraGameFolders { get; set; } = new();

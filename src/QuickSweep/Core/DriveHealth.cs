@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Globalization;
 using System.Text;
 
 namespace QuickSweep.Core;
@@ -39,7 +40,10 @@ public sealed class DriveReport
     public List<string> Findings { get; set; } = new();
     public string? Error { get; set; }
     public string Method { get; set; } = "";
+    /// <summary>The numbers that matter went up since the remembered baseline (sectors, CRC errors) or the wear dropped.</summary>
     public bool Degrading { get; set; }
+    /// <summary>What is wrong, as the end of a sentence about the drive: "has old damage", "is failing"... Empty when healthy.</summary>
+    public string Headline { get; set; } = "";
     public string Key => string.IsNullOrWhiteSpace(Serial) ? Model : Serial;
 }
 
@@ -49,6 +53,9 @@ public sealed class DriveBaseline
     public long Reallocated { get; set; }
     public long Pending { get; set; }
     public long Uncorrectable { get; set; }
+    /// <summary>Null in baselines written before 1.0.3: unknown, so a high count is not mistaken for a rising one.</summary>
+    public long? CrcErrors { get; set; }
+    public DateTime? CrcSince { get; set; }
     public double? LifeLeftPct { get; set; }
     public DateTime Since { get; set; } = DateTime.Now;
 }
@@ -246,60 +253,136 @@ public static unsafe class DriveHealth
         if (d.IsSsd && A(241) is { } w) d.WrittenTb = Math.Round((w.Raw & 0xFFFFFFFFFFFF) * 512.0 / 1e12, 1);
     }
 
-    public static void Evaluate(DriveReport d)
+    static string N(long n) => n.ToString("N0", CultureInfo.InvariantCulture);
+    static string Day(DateTime t) => t.ToString("d MMM", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Judges a drive. <paramref name="b"/> is what was remembered about it earlier (null on the first sight).
+    /// Rules: pending or uncorrectable sectors, a growing reallocated count and a failed vendor threshold are Critical;
+    /// a reallocated count that has stayed the same since the baseline is Warning ("old damage"); interface CRC errors
+    /// point at the cable, not the drive: Warning, Critical only while the count is still rising.
+    /// </summary>
+    public static void Evaluate(DriveReport d, DriveBaseline? b = null)
     {
         var f = d.Findings; f.Clear();
+        d.Degrading = false; d.Headline = "";
         var state = d.Attrs.Count == 0 ? HealthState.Unknown : HealthState.Good;
-        void Warn(string s) { f.Add(s); if (state < HealthState.Warning) state = HealthState.Warning; }
-        void Crit(string s) { f.Add(s); state = HealthState.Critical; }
+        int rank = 0;
+        // rank decides the headline: 6 getting worse, 5 failing, 4 wearing faster, 3 old damage, 2 cable, 1 other
+        void Add(HealthState s, int r, string headline, string text)
+        {
+            f.Add(text);
+            if (s > state) state = s;
+            if (r > rank) { rank = r; d.Headline = headline; }
+        }
+        static string S(long n, string word) => n == 1 ? word : word + "s";
 
         foreach (var a in d.Attrs)
             if (a.Threshold > 0 && a.Value > 0 && a.Value <= a.Threshold && a.Id != 1 && a.Id != 7)
-                Crit($"{a.Name}: value {a.Value} reached its failure threshold {a.Threshold}.");
-        if (d.Reallocated is long ra && ra > 0) { if (ra >= 50) Crit($"{ra} reallocated sectors: the drive is replacing bad areas."); else Warn($"{ra} reallocated sector{(ra == 1 ? "" : "s")}: watch it, back up important data."); }
-        if (d.Pending is long pe && pe > 0) { if (pe >= 20) Crit($"{pe} sectors waiting to be reallocated."); else Warn($"{pe} pending sector{(pe == 1 ? "" : "s")} (unreadable until rewritten)."); }
-        if (d.Uncorrectable is long un && un > 0) { if (un >= 20) Crit($"{un} uncorrectable read errors."); else Warn($"{un} uncorrectable read error{(un == 1 ? "" : "s")}."); }
-        if (d.LifeLeftPct is double life) { if (life <= 10) Crit($"SSD life left is only {life:0}%: replace it soon."); else if (life <= 25) Warn($"SSD life left {life:0}%."); }
+                Add(HealthState.Critical, 5, "is failing", $"{a.Name}: value {a.Value} reached its failure threshold {a.Threshold}.");
+
+        if (d.Reallocated is long ra && ra > 0)
+        {
+            if (b != null && ra > b.Reallocated)
+            {
+                d.Degrading = true;
+                Add(HealthState.Critical, 6, "is getting worse", $"Reallocated sectors rose from {N(b.Reallocated)} to {N(ra)} since {Day(b.Since)}: the drive is failing. Back up now and plan a replacement.");
+            }
+            else if (b != null)
+                Add(HealthState.Warning, 3, "has old damage", $"{N(ra)} reallocated {S(ra, "sector")}, unchanged since {Day(b.Since)}. Keep a backup of anything important on it.");
+            else
+                Add(HealthState.Warning, 3, "has reallocated sectors", $"{N(ra)} reallocated {S(ra, "sector")}, first seen now; Quick Sweep tells you if the number grows. Keep a backup of anything important on it.");
+        }
+        if (d.Pending is long pe && pe > 0)
+        {
+            bool grew = b != null && pe > b.Pending;
+            if (grew) d.Degrading = true;
+            Add(HealthState.Critical, grew ? 6 : 5, grew ? "is getting worse" : "is failing",
+                $"{N(pe)} {S(pe, "sector")} the drive cannot read until rewritten (pending reallocation)" + (grew ? $", up from {N(b!.Pending)} on {Day(b.Since)}." : ".") + " Back up now.");
+        }
+        if (d.Uncorrectable is long un && un > 0)
+        {
+            bool grew = b != null && un > b.Uncorrectable;
+            if (grew) d.Degrading = true;
+            Add(HealthState.Critical, grew ? 6 : 5, grew ? "is getting worse" : "is failing",
+                $"{N(un)} uncorrectable read {S(un, "error")}" + (grew ? $", up from {N(b!.Uncorrectable)} on {Day(b.Since)}." : ".") + " Back up now.");
+        }
+        if (d.LifeLeftPct is double life)
+        {
+            if (life <= 10) Add(HealthState.Critical, 5, "is nearly worn out", $"SSD life left is only {life:0}%: replace it soon.");
+            else if (life <= 25) Add(HealthState.Warning, 1, "is wearing out", $"SSD life left {life:0}%.");
+            if (b?.LifeLeftPct is double bl && life <= bl - 2)
+            {
+                d.Degrading = true;
+                Add(HealthState.Warning, 4, "is wearing fast", $"SSD life left went from {bl:0}% to {life:0}% since {Day(b.Since)}.");
+            }
+        }
         if (d.TempC is double temp)
         {
-            if (d.IsSsd ? temp >= 75 : temp >= 60) Crit($"Temperature {temp:0} °C is too high.");
-            else if (d.IsSsd ? temp >= 65 : temp >= 52) Warn($"Temperature {temp:0} °C is warm.");
+            if (d.IsSsd ? temp >= 75 : temp >= 60) Add(HealthState.Critical, 5, "is too hot", $"Temperature {temp:0} °C is too high.");
+            else if (d.IsSsd ? temp >= 65 : temp >= 52) Add(HealthState.Warning, 1, "is running warm", $"Temperature {temp:0} °C is warm.");
         }
-        if (d.CrcErrors is long crcs && crcs > 100) Warn($"{crcs} cable/interface (CRC) errors: reseat or replace the SATA cable.");
+        if (d.CrcErrors is long crcs && crcs > 100)
+        {
+            if (b?.CrcErrors is long bc && crcs > bc)
+            {
+                d.Degrading = true;
+                Add(HealthState.Critical, 6, "has a cable problem that is getting worse",
+                    $"{N(crcs)} interface (CRC) errors, up from {N(bc)} on {Day(b.CrcSince ?? b.Since)}. Reseat or replace the SATA cable now; the drive itself is probably fine.");
+            }
+            else
+                Add(HealthState.Warning, 2, "has a cable problem",
+                    $"{N(crcs)} interface (CRC) errors" + (b?.CrcErrors != null ? $", not rising since {Day(b.CrcSince ?? b.Since)}" : "") + ". Cable problem: reseat or replace the SATA cable.");
+        }
         d.State = state;
     }
 
     // ---- degradation vs. the remembered baseline ---------------------------------------------
+    static DriveBaseline Capture(DriveReport d, DateTime now) => new()
+    {
+        Reallocated = d.Reallocated ?? 0, Pending = d.Pending ?? 0, Uncorrectable = d.Uncorrectable ?? 0,
+        CrcErrors = d.CrcErrors, CrcSince = d.CrcErrors != null ? now : null, LifeLeftPct = d.LifeLeftPct, Since = now
+    };
+
+    /// <summary>Judges every drive against the stored baseline (creating one on first sight) and saves changes.</summary>
     public static void ApplyBaseline(List<DriveReport> reports, bool save = true)
     {
         var store = JsonStore.Load<BaselineStore>("drivehealth.json");
+        if (ApplyBaseline(reports, store, DateTime.Now) && save) JsonStore.Save("drivehealth.json", store);
+    }
+
+    /// <summary>Same, on an in-memory store. Returns true when the store changed.</summary>
+    public static bool ApplyBaseline(List<DriveReport> reports, BaselineStore store, DateTime now)
+    {
         bool changed = false;
         foreach (var d in reports.Where(r => r.Attrs.Count > 0))
         {
             if (!store.Drives.TryGetValue(d.Key, out var b))
             {
-                store.Drives[d.Key] = new DriveBaseline { Reallocated = d.Reallocated ?? 0, Pending = d.Pending ?? 0, Uncorrectable = d.Uncorrectable ?? 0, LifeLeftPct = d.LifeLeftPct };
-                changed = true; continue;
+                store.Drives[d.Key] = Capture(d, now);
+                changed = true;
+                Evaluate(d, null);
+                continue;
             }
-            bool worse = (d.Reallocated ?? 0) > b.Reallocated || (d.Pending ?? 0) > b.Pending || (d.Uncorrectable ?? 0) > b.Uncorrectable
-                         || (b.LifeLeftPct is double bl && d.LifeLeftPct is double nl && nl <= bl - 2);
-            d.Degrading = worse;
-            if (worse)
-            {
-                d.Findings.Add($"Getting worse since {b.Since:d MMM}: reallocated {b.Reallocated} -> {d.Reallocated ?? 0}, pending {b.Pending} -> {d.Pending ?? 0}, uncorrectable {b.Uncorrectable} -> {d.Uncorrectable ?? 0}" +
-                               (b.LifeLeftPct is double bl2 && d.LifeLeftPct is double nl2 ? $", life left {bl2:0}% -> {nl2:0}%" : "") + ".");
-                if (d.State < HealthState.Warning) d.State = HealthState.Warning;
-            }
+            // a baseline from before CRC was stored: start remembering it now, do not call a high count "rising"
+            if (b.CrcErrors == null && d.CrcErrors != null) { b.CrcErrors = d.CrcErrors; b.CrcSince = now; changed = true; }
+            // counters that went down (a repaired sector, a replaced cable): lower the baseline so a later rise is noticed
+            if (d.Reallocated is long r && r < b.Reallocated) { b.Reallocated = r; changed = true; }
+            if (d.Pending is long p && p < b.Pending) { b.Pending = p; changed = true; }
+            if (d.Uncorrectable is long u && u < b.Uncorrectable) { b.Uncorrectable = u; changed = true; }
+            if (d.CrcErrors is long c && b.CrcErrors is long bc && c < bc) { b.CrcErrors = c; b.CrcSince = now; changed = true; }
+            Evaluate(d, b);
         }
-        if (changed && save) JsonStore.Save("drivehealth.json", store);
+        return changed;
     }
 
     /// <summary>Accept today's numbers as the new normal.</summary>
     public static void ResetBaseline(IEnumerable<DriveReport> reports)
     {
         var store = JsonStore.Load<BaselineStore>("drivehealth.json");
+        var now = DateTime.Now;
         foreach (var d in reports.Where(r => r.Attrs.Count > 0))
-            store.Drives[d.Key] = new DriveBaseline { Reallocated = d.Reallocated ?? 0, Pending = d.Pending ?? 0, Uncorrectable = d.Uncorrectable ?? 0, LifeLeftPct = d.LifeLeftPct };
+            store.Drives[d.Key] = Capture(d, now);
         JsonStore.Save("drivehealth.json", store);
     }
 }

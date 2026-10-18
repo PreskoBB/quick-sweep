@@ -55,10 +55,10 @@ public class DriveHealthTests
 
     [Theory]
     [InlineData(5, 3, HealthState.Warning)]
-    [InlineData(5, 80, HealthState.Critical)]
-    [InlineData(197, 1, HealthState.Warning)]
+    [InlineData(5, 80, HealthState.Warning)]      // without history a reallocated count is a warning; growth makes it critical (DriveBaselineTests)
+    [InlineData(197, 1, HealthState.Critical)]
     [InlineData(197, 40, HealthState.Critical)]
-    [InlineData(198, 2, HealthState.Warning)]
+    [InlineData(198, 2, HealthState.Critical)]
     public void SectorCountersAreJudged(int id, long raw, HealthState expected)
     {
         var d = Report(false, Sector((id, 100, 100, raw)));

@@ -39,6 +39,7 @@ public partial class App : Application
         {
             if (Elevation.IsTokenElevated) { Shutdown(5); return; }     // demo files must never land in the real, secured state folder
             Demo.On = true;
+            Demo.Problem = e.Args.Any(a => a.StartsWith("--demo-problem")); Demo.Worse = e.Args.Contains("--demo-problem=worse");
             if (Environment.GetEnvironmentVariable("QUICKSWEEP_DATA") is not { Length: > 0 })
                 Environment.SetEnvironmentVariable("QUICKSWEEP_DATA", Path.Combine(Path.GetTempPath(), "QuickSweep-demo-" + Guid.NewGuid().ToString("N")[..8]));
         }

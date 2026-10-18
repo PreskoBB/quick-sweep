@@ -17,7 +17,7 @@ public sealed class DriveVm
         _d.SizeBytes > 0 ? Palette.Bytes(_d.SizeBytes) : null,
         string.IsNullOrEmpty(_d.Firmware) ? null : "firmware " + _d.Firmware
     }.Where(s => s != null));
-    public string Chip => _d.Degrading && _d.State == HealthState.Warning ? "Getting worse" : _d.State switch
+    public string Chip => _d.Degrading ? "Getting worse" : _d.State switch
     {
         HealthState.Good => "Healthy", HealthState.Warning => "Warning", HealthState.Critical => "Failing", _ => "Not available"
     };

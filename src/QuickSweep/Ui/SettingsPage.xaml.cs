@@ -35,7 +35,7 @@ public partial class SettingsPage : UserControl, IPage
         TbGCpu.Text = s.GameCpuPct.ToString(); TbGGpu.Text = s.GameGpuPct.ToString();
         TbGRam.Text = s.GameMinFreeRamGb.ToString("0.#"); TbGReady.Text = s.GameReadyPct.ToString();
         TbGSecs.Text = s.GameTriggerSeconds.ToString(); TbGRel.Text = s.GameReleaseSeconds.ToString(); TbGMin.Text = s.GameMinContributionPct.ToString();
-        TbCpu.Text = s.CpuAlertC.ToString(); TbGpu.Text = s.GpuAlertC.ToString(); TbSpace.Text = s.LowSpaceGb.ToString();
+        TbCpu.Text = s.CpuAlertC.ToString(); TbGpu.Text = s.GpuAlertC.ToString(); TbSpace.Text = s.LowSpaceGb.ToString(); TbPool.Text = s.PoolAlertGb.ToString("0.#"); TbPoolRam.Text = s.PoolPressureFreeRamGb.ToString("0.#"); TbPoolCommit.Text = s.PoolPressureCommitPct.ToString();
         TbGameFolders.Text = Lines(s.ExtraGameFolders);
         TbBackground.Text = Lines(s.BackgroundProcesses); TbRuntimes.Text = Lines(s.ScriptRuntimes); TbAgents.Text = Lines(s.AgentApps);
         TbScan.Text = Lines(s.ExtraScanFolders.Select(f => f.ToString())); TbProtected.Text = Lines(s.ProtectedFolders);
@@ -75,6 +75,9 @@ public partial class SettingsPage : UserControl, IPage
         if (int.TryParse(TbCpu.Text, out int c) && c is >= 50 and <= 110) s.CpuAlertC = c;
         if (int.TryParse(TbGpu.Text, out int g) && g is >= 50 and <= 110) s.GpuAlertC = g;
         if (int.TryParse(TbSpace.Text, out int sp) && sp is >= 1 and <= 500) s.LowSpaceGb = sp;
+        if (double.TryParse(TbPool.Text, out double pg) && pg is >= 1 and <= 64) s.PoolAlertGb = pg;
+        if (double.TryParse(TbPoolRam.Text, out double pr) && pr is >= 0.2 and <= 64) s.PoolPressureFreeRamGb = pr;
+        if (int.TryParse(TbPoolCommit.Text, out int pc) && pc is >= 50 and <= 100) s.PoolPressureCommitPct = pc;
         s.ExtraGameFolders = Split(TbGameFolders.Text);
         s.BackgroundProcesses = Split(TbBackground.Text).Select(StripExe).ToList();
         s.ScriptRuntimes = Split(TbRuntimes.Text).Select(StripExe).ToList();

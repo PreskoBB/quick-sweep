@@ -128,6 +128,11 @@ public sealed class SystemMonitor : IDisposable
         Latest = Demo.Reading();
         LastGroups = Demo.Groups();
         LastHealth = Demo.Health();
+        if (Demo.Problem)
+        {
+            Demo.SeedHealthBaseline();
+            var r = Demo.Health(); DriveHealth.ApplyBaseline(r); SetHealth(r);
+        }
         Ping.Seed(Demo.Pings());
     }
 
@@ -204,11 +209,23 @@ public sealed class SystemMonitor : IDisposable
         LastHealth = merged;
         foreach (var d in merged.Where(d => d.Attrs.Count > 0))
         {
-            bool bad = d.State == HealthState.Critical || d.Degrading;
-            string name = string.IsNullOrWhiteSpace(d.Model) ? $"Drive {d.Number}" : d.Model;
-            Alerts.Raise("drive:" + d.Key, bad, $"{name} is {(d.State == HealthState.Critical ? "failing" : "getting worse")}",
-                (d.Findings.Count > 0 ? string.Join(" ", d.Findings) : "SMART reports problems.") + " Back up important data and see the Drive health page.");
+            var (on, title, detail, level, quiet) = HealthAlert(d);
+            Alerts.Raise("drive:" + d.Key, on, title, detail, "health", level, quiet);
         }
+    }
+
+    /// <summary>
+    /// What a drive's result looks like as an alert. Critical (failing, getting worse) notifies like any alert; a Warning
+    /// (old damage that has not grown, a cable problem) only shows in the flyout banner and never interrupts anything.
+    /// </summary>
+    public static (bool on, string title, string detail, AlertLevel level, bool quiet) HealthAlert(DriveReport d)
+    {
+        string name = string.IsNullOrWhiteSpace(d.Model) ? $"Drive {d.Number}" : d.Model;
+        bool critical = d.State == HealthState.Critical;
+        bool on = d.State is HealthState.Critical or HealthState.Warning;
+        string headline = string.IsNullOrEmpty(d.Headline) ? (critical ? "is failing" : "needs attention") : d.Headline;
+        string detail = d.Findings.Count > 0 ? string.Join(" ", d.Findings) : "SMART reports problems.";
+        return (on, $"{name} {headline}", detail, critical ? AlertLevel.Critical : AlertLevel.Warning, !critical);
     }
 
     void Slow(Telemetry t)
