@@ -34,7 +34,7 @@
                 </StackPanel>
             </Border>
             <TextBlock Style="{StaticResource Faint}" Margin="0,8,0,0" TextWrapping="Wrap" TextTrimming="None"
-                       Text="Last 10 minutes, one dot per ping. A spike is a reply slower than 100 ms or a lost packet (red marks at the bottom). During a game the same numbers go into the session summary."/>
+                       Text="Last 10 minutes, one point per ping. Move the pointer over a chart to read the time and exact latency of a ping. A spike is a reply slower than 100 ms or a lost packet (red mark at the bottom). A red arrow at the top is a reply too slow for the chart (above 500 ms), labelled with its real value. During a game the worst ping and the lost packets go into the session summary."/>
         </StackPanel>
     </ScrollViewer>
 </UserControl>

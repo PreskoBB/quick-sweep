@@ -172,7 +172,7 @@ public static class Demo
     public static void SeedSessions()
     {
         var now = DateTime.Now;
-        PingBrief P(double avg, double max, double loss, int spikes) => new() { Avg = avg, Max = max, LossPct = loss, Spikes = spikes, Count = 1200 };
+        PingBrief P(double avg, double max, double loss, int spikes, int lost = 0, DateTime? maxAt = null) => new() { Avg = avg, Max = max, LossPct = loss, Spikes = spikes, Count = 1200, Lost = lost, MaxAt = maxAt };
         var items = new List<SessionEntry>
         {
             new()
@@ -186,7 +186,7 @@ public static class Demo
             {
                 Game = "Pixel Quest", Start = now.Date.AddDays(-1).AddHours(21), DurationSec = 2 * 3600 + 900,
                 CpuTempPeak = 83, CpuTempAvg = 74, GpuTempPeak = 79, GpuTempAvg = 72, CpuLoadPeak = 96, CpuLoadAvg = 63, GpuLoadPeak = 99, GpuLoadAvg = 97,
-                RamPeakGb = 21.6, RamPeakPct = 68, VramPeakGb = 9.9, Router = P(3, 18, 0, 0), Internet = P(29, 310, 1.8, 14),
+                RamPeakGb = 21.6, RamPeakPct = 68, VramPeakGb = 9.9, Router = P(3, 18, 0, 0), Internet = P(29, 310, 1.8, 14, 22, now.Date.AddDays(-1).AddHours(21).AddMinutes(47)),
             },
             new()
             {
@@ -208,9 +208,12 @@ public static class Demo
         var t0 = DateTime.Now.AddMinutes(-10);
         for (int i = 0; i < 200; i++)
         {
-            double router = 1.2 + rnd.NextDouble() * 1.8;
-            double net = 15 + rnd.NextDouble() * 6 + (i % 47 == 0 ? 8 : 0);
+            double? router = 1.2 + rnd.NextDouble() * 1.8;
+            double? net = 15 + rnd.NextDouble() * 6 + (i % 47 == 0 ? 8 : 0);
+            if (i == 61) router = null;                  // one lost packet
+            if (i == 94) net = 212;
             if (i == 133) net = 128;
+            if (i == 151) net = 1840;                    // far above the 500 ms top of the chart
             list.Add(new PingSample(t0.AddSeconds(i * 3), router, net));
         }
         return list;

@@ -19,7 +19,10 @@ public sealed class SessionVM
     public string RouterLine { get; set; } = "";
     public string NetLine { get; set; } = "";
     public string Extra { get; set; } = "";
+    /// <summary>Worst ping and lost packets of the game; empty (and hidden) when there was neither a spike nor a loss.</summary>
+    public string PingTrouble { get; set; } = "";
     public Brush VerdictBrush { get; set; } = Palette.Good;
+    public Visibility PingTroubleVis => string.IsNullOrEmpty(PingTrouble) ? Visibility.Collapsed : Visibility.Visible;
     public Visibility ExtraVis => string.IsNullOrEmpty(Extra) ? Visibility.Collapsed : Visibility.Visible;
 
     public static SessionVM From(SessionEntry e)
@@ -37,7 +40,8 @@ public sealed class SessionVM
                 ? string.Join(", ", new[] { e.CpuThrottled ? "CPU hit the 95 °C limit" : null, e.GpuThrottled ? $"GPU slowed by heat ({e.GpuThrottleSec} s)" : null }.Where(s => s != null))
                 : "None",
             RouterLine = Ping(e.Router),
-            NetLine = Ping(e.Internet)
+            NetLine = Ping(e.Internet),
+            PingTrouble = PingReport.SessionLine(e.Router, e.Internet)
         };
         bool hot = (e.CpuTempPeak ?? 0) >= 90 || e.GpuTempPeak >= 83;
         if (e.CpuThrottled || e.GpuThrottled) { v.Verdict = "Thermal throttling detected: the PC slowed itself down to stay cool."; v.VerdictBrush = Palette.Bad; }

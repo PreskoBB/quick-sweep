@@ -10,6 +10,10 @@ public sealed class PingStats
 {
     public int Count, Lost, Spikes;
     public double Avg, Max;
+    /// <summary>When the slowest reply came in (null when every packet was lost).</summary>
+    public DateTime? MaxAt;
+    /// <summary>The newest reading: milliseconds, or null when that packet was lost.</summary>
+    public double? LastMs;
     public double LossPct => Count == 0 ? 0 : 100.0 * Lost / Count;
 }
 
@@ -17,6 +21,9 @@ public sealed class PingStats
 public sealed class PingMonitor
 {
     public const double SpikeMs = 100;
+    // One sample per 3 s, each stamped with its time. Bounded: at the cap the oldest 500 go, so about 5 hours stay (the Network page needs 10 minutes, a session summary the whole game).
+    public const int HistoryCap = 6000;
+    const int TrimBy = 500;
     readonly List<PingSample> _hist = new();
     readonly object _l = new();
     public string RouterAddress { get; private set; } = "";
@@ -76,12 +83,7 @@ public sealed class PingMonitor
                     var b = One("1.1.1.1", p2);
                     await Task.WhenAll(a, b);
                     var s = new PingSample(DateTime.Now, a.Result, b.Result);
-                    lock (_l)
-                    {
-                        _hist.Add(s);
-                        if (_hist.Count > 3000) _hist.RemoveRange(0, 500);
-                    }
-                    Last = s;
+                    Record(s);
                     Sampled?.Invoke(s);
                 }
                 await Task.Delay(3000, ct);
@@ -89,6 +91,17 @@ public sealed class PingMonitor
             catch (OperationCanceledException) { break; }
             catch (Exception e) { Log.Write("ping loop: " + e.Message); try { await Task.Delay(5000, ct); } catch { break; } }
         }
+    }
+
+    /// <summary>Appends one stamped reading; at the cap the oldest ones are dropped, so memory never grows.</summary>
+    internal void Record(PingSample s)
+    {
+        lock (_l)
+        {
+            _hist.Add(s);
+            if (_hist.Count > HistoryCap) _hist.RemoveRange(0, TrimBy);
+        }
+        Last = s;
     }
 
     /// <summary>Demo mode: fills the history with sample readings instead of pinging.</summary>
@@ -110,8 +123,9 @@ public sealed class PingMonitor
         foreach (var s in samples)
         {
             r.Count++; n.Count++;
-            if (s.RouterMs is double a) { rs += a; rc++; r.Max = Math.Max(r.Max, a); if (a >= SpikeMs) r.Spikes++; } else { r.Lost++; r.Spikes++; }
-            if (s.NetMs is double b) { ns += b; nc++; n.Max = Math.Max(n.Max, b); if (b >= SpikeMs) n.Spikes++; } else { n.Lost++; n.Spikes++; }
+            r.LastMs = s.RouterMs; n.LastMs = s.NetMs;
+            if (s.RouterMs is double a) { rs += a; rc++; if (a > r.Max || r.MaxAt == null) { r.Max = a; r.MaxAt = s.T; } if (a >= SpikeMs) r.Spikes++; } else { r.Lost++; r.Spikes++; }
+            if (s.NetMs is double b) { ns += b; nc++; if (b > n.Max || n.MaxAt == null) { n.Max = b; n.MaxAt = s.T; } if (b >= SpikeMs) n.Spikes++; } else { n.Lost++; n.Spikes++; }
         }
         r.Avg = rc > 0 ? rs / rc : 0; n.Avg = nc > 0 ? ns / nc : 0;
         return (r, n);

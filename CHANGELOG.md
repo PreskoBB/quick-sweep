@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.4
+
+- **Network charts can be read.** Move the pointer over either chart: the sample nearest to it gets a vertical marker line and a highlighted point, and a small readout shows the time (`HH:mm:ss`, local) and the latency in ms, or "lost" for a dropped packet. The readout stays inside the chart and does not flicker (it only redraws when the nearest sample changes); while you are reading a point the chart holds still instead of scrolling, and catches up when the pointer leaves.
+- **Replies above the chart's 500 ms ceiling are no longer anonymous.** The chart still draws them at the top edge, but now as a red up-arrow labelled with the real value, and the readout shows the true latency, so a 2,000 ms spike no longer looks like a 510 ms one.
+- **Peak and current value above each chart**, for example `now 18 ms · peak 412 ms at 21:14 · avg 17 ms · loss 2.1% (4 lost) · 3 spikes`. Loss only appears when packets were lost.
+- **After-game summary:** a game with a ping spike or lost packets gets one extra line on the Sessions page: the worst ping (value, time, router or internet) and the number of lost packets. Quiet sessions show nothing. Sessions saved by 1.0.3 have no time for their worst ping and no packet count; the time is left out and the count is estimated from the saved loss percentage.
+- The ping history already stamped every reading with its time; it now keeps about 5 hours (was 2.5), still a fixed-size buffer, so a long game's worst ping is not lost from the summary.
+- Screenshots: `--shots --demo` renders the Network page with a hover readout on each chart (no real pointer needed).
+
 ## 1.0.3
 
 - **The alert banner in the flyout was blank.** The "1 issue" badge and the yellow banner appeared, but no text was drawn: the alert's title and message were public fields, and a WPF binding only reads properties. They are properties now, every alert type (heat, full C:, kernel memory, leaks, drives) shows its title and a short message, a red banner marks a serious one, and clicking a banner opens the page that explains it (Drive health for a drive alert, Memory, Disk cleaner, Sessions). Tests read the real XAML and fail if a banner binding does not point at a property.

@@ -40,6 +40,7 @@
                                     <StackPanel Margin="0,0,10,0"><TextBlock Text="Router ping" Style="{StaticResource Faint}"/><TextBlock Text="{Binding RouterLine}" Style="{StaticResource Body}" TextTrimming="None" TextWrapping="Wrap"/></StackPanel>
                                     <StackPanel><TextBlock Text="Internet ping (1.1.1.1)" Style="{StaticResource Faint}"/><TextBlock Text="{Binding NetLine}" Style="{StaticResource Body}" TextTrimming="None" TextWrapping="Wrap"/></StackPanel>
                                 </UniformGrid>
+                                <TextBlock Text="{Binding PingTrouble}" Visibility="{Binding PingTroubleVis}" Foreground="{StaticResource WarnBrush}" FontSize="12" Margin="0,8,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Text="{Binding Extra}" Visibility="{Binding ExtraVis}" Style="{StaticResource Caption}" Margin="0,10,0,0" TextWrapping="Wrap" TextTrimming="None"/>
                             </StackPanel>
                         </Border>

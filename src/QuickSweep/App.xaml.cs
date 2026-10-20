@@ -426,6 +426,7 @@ public partial class App : Application
                 main.Height = 720;
                 continue;
             }
+            if (key == "network" && Demo.On && main.Current is NetworkPage np) { np.DemoHover(); await Task.Delay(300); }   // hover readout, as if the pointer were on a chart
             Save((FrameworkElement)main.Content, Path.Combine(dir, $"{key}.png"));
         }
         main.Close();

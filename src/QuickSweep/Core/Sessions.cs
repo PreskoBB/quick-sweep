@@ -7,6 +7,10 @@ public sealed class PingBrief
     public double LossPct { get; set; }
     public int Spikes { get; set; }
     public int Count { get; set; }
+    /// <summary>Packets lost during the session (0 in entries saved before 1.0.4: <see cref="PingReport.LostCount"/> estimates it from <see cref="LossPct"/>).</summary>
+    public int Lost { get; set; }
+    /// <summary>When the slowest reply came in (null in entries saved before 1.0.4).</summary>
+    public DateTime? MaxAt { get; set; }
 }
 
 public sealed class SessionEntry
@@ -99,7 +103,7 @@ public sealed class SessionRecorder
         _game = null;
         if ((end - _start).TotalSeconds < 60 || _n == 0) return null;
         var (r, n) = PingMonitor.Summarize(ping.History(_start));
-        PingBrief B(PingStats s) => new() { Avg = Math.Round(s.Avg, 1), Max = s.Max, LossPct = Math.Round(s.LossPct, 1), Spikes = s.Spikes, Count = s.Count };
+        PingBrief B(PingStats s) => new() { Avg = Math.Round(s.Avg, 1), Max = s.Max, LossPct = Math.Round(s.LossPct, 1), Spikes = s.Spikes, Count = s.Count, Lost = s.Lost, MaxAt = s.MaxAt };
         return new SessionEntry
         {
             Game = name, Start = _start, End = end, DurationSec = (int)(end - _start).TotalSeconds,
