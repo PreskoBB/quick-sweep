@@ -44,14 +44,14 @@ public partial class SettingsPage : UserControl, IPage
         var cpu = _mon.Cpu;
         if (Demo.On)
             StatusBlock.Text = $"Version {typeof(SettingsPage).Assembly.GetName().Version?.ToString(3)}\nAdmin rights: yes\nCPU sensor: ok (CPU Package)\nPawnIO driver: installed\n" +
-                               "GPU sensor (NVML): ok\nRouter for ping: found\nState folder: C:\\ProgramData\\QuickSweep";
+                               "GPU: RTX 3060 (NVIDIA, 12 GB)\nGPU temperature: NVML\nGPU usage: NVML\nGPU memory: NVML\nRouter for ping: found\nState folder: C:\\ProgramData\\QuickSweep";
         else
         StatusBlock.Text =
             $"Version {typeof(SettingsPage).Assembly.GetName().Version?.ToString(3)}\n" +
             $"Admin rights: {(Elevation.IsElevated ? "yes" : "no")}\n" +
             $"CPU sensor: {cpu.Status}{(string.IsNullOrEmpty(cpu.SensorName) ? "" : " (" + cpu.SensorName + ")")}\n" +
             $"PawnIO driver: {(CpuSensor.PawnIoInstalled() ? "installed" : "not installed")}\n" +
-            $"GPU sensor (NVML): {(Nvml.Available ? "ok" : "not available")}\n" +
+            _mon.GpuMon.StatusText() + "\n" +
             $"Router for ping: {(string.IsNullOrEmpty(_mon.Ping.RouterAddress) ? "not found" : _mon.Ping.RouterAddress)}\n" +
             $"State folder: {Paths.Data}" + (Paths.Refused != null ? $"\nSTATE FOLDER REFUSED, settings and logs are off: {Paths.Refused}" : "");
         _loading = false;

@@ -1,18 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using QuickSweep.Core;
 
 namespace QuickSweep.Native;
-
-public sealed class GpuReading
-{
-    public string Name = "";
-    public double TempC, Load, PowerW;
-    public long VramUsed, VramTotal;
-    public int FanPct = -1;
-    public int ClockMhz;
-    public bool ThermalThrottle;
-    public ulong ThrottleReasons;
-}
 
 /// <summary>NVIDIA GPU via NVML (nvml.dll ships with the display driver). No admin needed.</summary>
 
@@ -54,13 +44,14 @@ internal static class Nvml
         catch { _ok = false; }
     }
 
-    public static GpuReading? Read()
+    /// <summary>One NVML reading; a call the driver refuses leaves its field null (shown as "--"), it is no longer reported as 0.</summary>
+    public static GpuPartial? Read()
     {
         Init();
         if (!_ok) return null;
         try
         {
-            var r = new GpuReading { Name = _name };
+            var r = new GpuPartial { Source = "NVML", Name = _name, TempSensor = "NVML temperature" };
             if (nvmlDeviceGetTemperature(_dev, 0, out uint t) == 0) r.TempC = t;
             if (nvmlDeviceGetUtilizationRates(_dev, out var u) == 0) r.Load = u.Gpu;
             if (nvmlDeviceGetMemoryInfo(_dev, out var m) == 0) { r.VramTotal = (long)m.Total; r.VramUsed = (long)m.Used; }
@@ -81,4 +72,14 @@ internal static class Nvml
         }
         catch { return null; }
     }
+}
+
+/// <summary>Source (a): NVIDIA through NVML, exactly the path earlier versions used. Authoritative: when it answers completely nothing else runs.</summary>
+internal sealed class NvidiaGpuSource : IGpuSource
+{
+    public string Label => "NVML";
+    public bool Authoritative => true;
+    public string Status => Nvml.Available ? "ok" : "not available (no NVIDIA driver)";
+    public bool Applies(GpuAdapter? adapter) => (adapter == null || adapter.Vendor == GpuVendor.Nvidia) && Nvml.Available;
+    public GpuPartial? Read(GpuAdapter? adapter) => Nvml.Read();
 }

@@ -33,7 +33,7 @@ public sealed class SessionVM
             When = FormatWhen(e.Start),
             Duration = FormatDuration(e.DurationSec),
             CpuTemp = e.CpuTempPeak is double cp ? $"{cp:0} °C peak · {e.CpuTempAvg:0} avg" : "not measured (no admin driver)",
-            GpuTemp = $"{e.GpuTempPeak:0} °C peak · {e.GpuTempAvg:0} avg",
+            GpuTemp = e.GpuTempPeak is > 0 ? $"{e.GpuTempPeak:0} °C peak · {e.GpuTempAvg:0} avg" : "no temperature sensor on this GPU",
             Loads = $"CPU {e.CpuLoadPeak:0}% · GPU {e.GpuLoadPeak:0}%",
             Memory = $"RAM {e.RamPeakGb:0.0} GB ({e.RamPeakPct:0}%)" + (e.VramPeakGb > 0 ? $" · VRAM {e.VramPeakGb:0.0} GB" : ""),
             Throttle = (e.CpuThrottled || e.GpuThrottled)
@@ -43,7 +43,7 @@ public sealed class SessionVM
             NetLine = Ping(e.Internet),
             PingTrouble = PingReport.SessionLine(e.Router, e.Internet)
         };
-        bool hot = (e.CpuTempPeak ?? 0) >= 90 || e.GpuTempPeak >= 83;
+        bool hot = (e.CpuTempPeak ?? 0) >= 90 || (e.GpuTempPeak ?? 0) >= 83;
         if (e.CpuThrottled || e.GpuThrottled) { v.Verdict = "Thermal throttling detected: the PC slowed itself down to stay cool."; v.VerdictBrush = Palette.Bad; }
         else if (hot) { v.Verdict = "Ran hot, but did not throttle."; v.VerdictBrush = Palette.Warn; }
         else if (e.Internet.Spikes >= 10 || e.Internet.LossPct >= 2) { v.Verdict = "PC was fine; the connection had trouble."; v.VerdictBrush = Palette.Warn; }

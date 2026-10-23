@@ -18,7 +18,7 @@ More pictures in [`docs/screenshots`](docs/screenshots): sessions, startup apps,
 
 **Tray icon and flyout**
 - CPU temperature (top) and GPU temperature (bottom) drawn as numbers on the icon, coloured when warm or hot.
-- One click opens: CPU temperature and load, GPU temperature, load, VRAM and fan, RAM used and committed, free space on every fixed drive, uptime, and the five biggest memory users **grouped per app** (all browser processes are one row), each with a confirmed "End".
+- One click opens: CPU temperature and load, GPU name, temperature, load, VRAM and fan (what is available depends on the GPU, see [Hardware support](#hardware-support)), RAM used and committed, free space on every fixed drive, uptime, and the five biggest memory users **grouped per app** (all browser processes are one row), each with a confirmed "End".
 - It closes on click-away. The window is created once and kept hidden, so it opens instantly.
 
 **Game awareness**
@@ -38,7 +38,7 @@ More pictures in [`docs/screenshots`](docs/screenshots): sessions, startup apps,
   - Everything is put back when the game closes, or when the load has stayed calm for 90 seconds, followed by a 120 second cooldown so a borderline load cannot flap. If Quick Sweep is killed mid-game, the list is stored and restored at the next start.
   - Every action is written into that game's session summary, and there is at most one quiet notification per game. No sounds.
 - **Game flag file.** While a game runs, `%ProgramData%\QuickSweep\public\gaming.json` exists (a plain, non-elevated run uses `%LOCALAPPDATA%\QuickSweep\public\gaming.json`): `{"game": "Some Game", "exe": "SomeGame.exe", "since": "2026-10-11T21:14:03+03:00", "pid": 4242}`. It is deleted when the game closes, at start-up and on exit, so it is never stale. Other programs can look for it and put off heavy work, for example in PowerShell: `if (Test-Path "$env:ProgramData\QuickSweep\public\gaming.json") { "wait" }`.
-- **After-game summary** (one entry per game, the last 20 are shown on the Sessions page): duration, peak and average CPU and GPU temperature, peak loads, peak RAM and VRAM, whether anything throttled, router and internet ping spikes, and what Game Mode did. If the game had a ping spike or lost packets, one extra line gives the worst ping (value, time and whether it was the router or the internet) and the number of lost packets. Sessions under a minute are ignored.
+- **After-game summary** (one entry per game, the last 20 are shown on the Sessions page): duration, peak and average CPU and GPU temperature (when the GPU has a temperature sensor), peak loads, peak RAM and VRAM, whether anything throttled, router and internet ping spikes, and what Game Mode did. If the game had a ping spike or lost packets, one extra line gives the worst ping (value, time and whether it was the router or the internet) and the number of lost packets. Sessions under a minute are ignored.
 
 **Alerts, only when something is really wrong** (never a sound, never repeated within three hours): CPU over 90 °C or GPU over 83 °C for a sustained stretch, low free space on C:, an app whose memory climbs steadily (a leak), Windows kernel memory ballooning while memory is also short (a large kernel pool with plenty of free RAM is only cache; the limits are in Settings), a drive that is failing or getting worse. A drive with old damage that has not grown, or a cable problem, shows as a quiet note in the flyout without a notification. Click an alert in the flyout to open the page that explains it. During a game they are held back and shown after it ends.
 
@@ -55,6 +55,23 @@ More pictures in [`docs/screenshots`](docs/screenshots): sessions, startup apps,
 **Network**: one ICMP packet every 3 seconds to your default gateway and to 1.1.1.1, with latency, loss, spikes and a verdict: your network, the internet, or neither. Each chart covers the last 10 minutes. Move the pointer over a chart to see the time (`HH:mm:ss`) and the exact latency of the nearest ping (or "lost"), with a marker line and a highlighted point. The chart is capped at 500 ms: a slower reply is drawn as a red arrow at the top edge, labelled with its real value, and the tooltip shows it in full. Above each chart: the current ping, the 10-minute peak and when it happened, the average, and the loss if there was any.
 
 ![Network page with a hover readout on each chart](docs/screenshots/network.png)
+
+## Hardware support
+
+**GPU.** Quick Sweep shows one GPU: the discrete one if there is one (integrated graphics only when nothing else is installed), and among several discrete cards the one with the most dedicated video memory. The card title shows its real name, for example "Radeon RX 580" or "RTX 3060". What it can read depends on the GPU:
+
+| GPU | Temperature | Usage | VRAM | Fan | Read through |
+|---|---|---|---|---|---|
+| NVIDIA | yes | yes | yes | yes | NVML, part of the NVIDIA display driver |
+| AMD Radeon | where the driver reports a sensor (core, else hot spot) | yes | yes | where reported | LibreHardwareMonitor (AMD's display library, user mode: no admin and no PawnIO needed), Windows counters as the cross-check |
+| Intel Arc, Intel integrated | where the driver reports one (integrated graphics usually has none) | yes | dedicated memory | where reported | LibreHardwareMonitor, then Windows counters |
+| any other GPU | no | yes | yes | no | Windows' GPU performance counters (the figures Task Manager shows), no admin |
+
+A GPU without a readable temperature shows "--" with a small "no sensor" hint; its usage and VRAM still work, and Game Mode's GPU check, the tray tooltip and the after-game summary use them. The "GPU is running hot" alert needs a temperature. Usage from the Windows counters is the busiest 3D or compute engine of the adapter (processes added up per engine), the same figure Task Manager shows; NVIDIA's own figure counts any activity on the GPU and can read higher while video is being encoded.
+
+If a GPU shows "no sensor" or numbers that look wrong, run `QuickSweep.exe --gpu-probe=gpu.txt` from a normal (not elevated) prompt. It writes what every source saw (adapters, each sensor LibreHardwareMonitor lists, the raw counters) and changes nothing. Settings > status shows which source supplies the temperature, usage and memory.
+
+**CPU temperature and drive SMART** need administrator rights (see Install).
 
 ## Install
 
@@ -75,7 +92,7 @@ Windows SmartScreen may say "Windows protected your PC" the first time, because 
 4. Registers the scheduled task `QuickSweep` and adds a Start-menu shortcut.
 5. Starts Quick Sweep.
 
-**About the PawnIO driver, honestly.** Reading CPU temperature needs code that runs in the Windows kernel, so a signed driver is unavoidable. [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor), which Quick Sweep uses for the CPU, switched in 2025 from the old WinRing0 driver (which Windows Defender flags) to [PawnIO](https://pawnio.eu). PawnIO does not expose raw port and register access to every program; it loads small signed modules that do one job each. It is a third-party project that Quick Sweep does not control. It is installed only if you agree, it is not part of this repository, and `uninstall.ps1` removes it only if the installer put it there. The GPU is read through NVIDIA's NVML library (part of the NVIDIA display driver), which needs no driver of its own.
+**About the PawnIO driver, honestly.** Reading CPU temperature needs code that runs in the Windows kernel, so a signed driver is unavoidable. [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor), which Quick Sweep uses for the CPU, switched in 2025 from the old WinRing0 driver (which Windows Defender flags) to [PawnIO](https://pawnio.eu). PawnIO does not expose raw port and register access to every program; it loads small signed modules that do one job each. It is a third-party project that Quick Sweep does not control. It is installed only if you agree, it is not part of this repository, and `uninstall.ps1` removes it only if the installer put it there. NVIDIA GPUs are read through NVIDIA's NVML library (part of the NVIDIA display driver), AMD and Intel GPUs through LibreHardwareMonitor's display-driver access and Windows' GPU counters; none of these needs PawnIO or administrator rights.
 
 ## Privacy
 
@@ -141,11 +158,11 @@ dotnet test tests/QuickSweep.Tests -c Release --filter "Needs!=NonAdmin"   # the
 
 The tests build their sandboxes under `%QUICKSWEEP_TEST_TMP%` (default: the temp folder). They include real NTFS junctions to prove that a link's target survives. `tests/e2e-security.ps1` runs an isolated `--dev` instance with a scratch data folder. `tests/e2e-game.ps1` starts a stand-in game and refuses to run unless you pass `-IUnderstandThisSlowsRealBackgroundWork`, because Game Mode would slow every real encoder, script and browser while it runs; use it on an idle test PC only.
 
-Developer switches of the executable: `--shots=<dir>` renders every page to PNG without showing a window, add `--demo` to fill them with sample data (add `--gif` for the flyout animation frames), `--dump=<file>` writes the live readings, `--clean-scan=<file>` runs the cleaner measurement read-only, `--dev` starts a separate instance next to an installed one, `--data=<folder>` gives that instance its own data folder (honored only together with `--dev` and never by an elevated process).
+Developer switches of the executable: `--shots=<dir>` renders every page to PNG without showing a window, add `--demo` to fill them with sample data (add `--gif` for the flyout animation frames), `--dump=<file>` writes the live readings, `--gpu-probe=<file>` writes what each GPU source sees (normal prompt only), `--clean-scan=<file>` runs the cleaner measurement read-only, `--dev` starts a separate instance next to an installed one, `--data=<folder>` gives that instance its own data folder (honored only together with `--dev` and never by an elevated process).
 
 ## Limits
 
-- The GPU numbers need an NVIDIA GPU. NVMe SMART is not read.
+- GPU temperature needs a sensor the driver exposes (NVIDIA; AMD and Intel where LibreHardwareMonitor sees one); usage and VRAM work on any GPU. Only one GPU is shown. NVMe SMART is not read.
 - The CPU "throttled" flag is a heuristic (package temperature at the 95 °C level); the GPU flag comes from the driver's throttle reasons.
 - Game detection is heuristic. If a launcher or tool is mistaken for a game, switch Game Mode off in the flyout (it only ever lowers priorities, and restores them).
 - Windows balloon notifications have no buttons, so Game Mode has no action in its notification; its switch is in the flyout and Settings.

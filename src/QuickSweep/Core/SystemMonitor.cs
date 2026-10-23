@@ -7,6 +7,8 @@ public sealed class SystemMonitor : IDisposable
 {
     public AppSettings Settings { get; }
     public CpuSensor Cpu { get; } = new();
+    /// <summary>GPU readings for every vendor: NVML, LibreHardwareMonitor, Windows counters (see <see cref="GpuMonitor"/>).</summary>
+    public GpuMonitor GpuMon { get; } = GpuMonitor.CreateDefault();
     public SystemStats Sys { get; } = new();
     public PingMonitor Ping { get; } = new();
     public GameWatcher Watcher { get; }
@@ -79,7 +81,7 @@ public sealed class SystemMonitor : IDisposable
         var parts = new List<string>
         {
             $"{TimeSpan.FromSeconds(e.DurationSec):h\\:mm\\:ss} played",
-            $"GPU peak {e.GpuTempPeak:0} °C" + (e.CpuTempPeak is double c ? $", CPU peak {c:0} °C" : "")
+            (e.GpuTempPeak is > 0 ? $"GPU peak {e.GpuTempPeak:0} °C" : $"GPU peak load {e.GpuLoadPeak:0}%") + (e.CpuTempPeak is double c ? $", CPU peak {c:0} °C" : "")
         };
         if (e.CpuThrottled || e.GpuThrottled) parts.Add("thermal throttling seen");
         if (e.Internet.Spikes > 0) parts.Add($"{e.Internet.Spikes} ping spikes");
@@ -102,7 +104,7 @@ public sealed class SystemMonitor : IDisposable
     {
         GamingFlag.Clear();   // a flag left by a crashed run would claim a game is running
         Cpu.Open();
-        Log.Write($"cpu sensor: {Cpu.Status}; nvml: {Nvml.Available}; elevated: {Elevation.IsElevated}");
+        Log.Write($"cpu sensor: {Cpu.Status}; elevated: {Elevation.IsElevated}");
         Ping.Start();
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
@@ -145,7 +147,8 @@ public sealed class SystemMonitor : IDisposable
         t.Mem = Sys.ReadMemory();
         Cpu.Update();
         t.CpuTemp = Cpu.TempC; t.CpuPower = Cpu.PowerW; t.CpuClock = Cpu.ClockMhz; t.CpuStatus = Cpu.Status;
-        t.Gpu = Nvml.Read();
+        try { t.Gpu = GpuMon.Read(); }
+        catch (Exception e) { Log.Write("gpu read failed: " + e.Message); }
         _lastGpuLoad = t.Gpu?.Load ?? 0;
         t.Uptime = SystemStats.Uptime();
         if (DateTime.Now - _lastDrives > TimeSpan.FromSeconds(30) || _drives.Length == 0)
@@ -274,5 +277,6 @@ public sealed class SystemMonitor : IDisposable
         Mode.RestoreAll("Quick Sweep closed");
         GamingFlag.Clear();
         Cpu.Dispose();
+        GpuMon.Dispose();
     }
 }

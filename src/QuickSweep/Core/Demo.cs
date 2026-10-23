@@ -16,6 +16,9 @@ public static class Demo
     /// <summary><c>--demo-problem=worse</c>: the remembered numbers are lower than the current ones, so the damage is growing (red banner).</summary>
     public static bool Worse { get; set; }
 
+    /// <summary><c>--demo-gpu=amd</c>: an AMD card with no temperature sensor (usage and VRAM from the Windows counters), to check the "no sensor" look.</summary>
+    public static bool AmdNoSensor { get; set; }
+
     const long GB = 1024L * 1024 * 1024;
     const long MB = 1024L * 1024;
 
@@ -33,11 +36,17 @@ public static class Demo
         {
             Time = DateTime.Now,
             CpuTemp = cpuTemp, CpuLoad = cpuLoad, CpuClock = 4350, CpuPower = 38, CpuStatus = "ok",
-            Gpu = new GpuReading
-            {
-                Name = "NVIDIA GeForce RTX 3060", TempC = gpuTemp, Load = gpuLoad, PowerW = 34,
-                VramUsed = (long)(1.7 * GB), VramTotal = 12 * GB, FanPct = 30, ClockMhz = 1320
-            },
+            Gpu = AmdNoSensor
+                ? new GpuReading
+                {
+                    Name = "Radeon RX 580 Series", Vendor = "AMD", TempC = null, Load = gpuLoad, VramUsed = (long)(2.3 * GB), VramTotal = 8 * GB,
+                    LoadSource = "Windows counters", VramSource = "Windows counters", Note = "LibreHardwareMonitor found this GPU but the driver offers no temperature sensor."
+                }
+                : new GpuReading
+                {
+                    Name = "NVIDIA GeForce RTX 3060", TempC = gpuTemp, Load = gpuLoad, PowerW = 34,
+                    VramUsed = (long)(1.7 * GB), VramTotal = 12 * GB, FanPct = 30, ClockMhz = 1320
+                },
             Mem = mem,
             Drives = new[]
             {

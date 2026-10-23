@@ -67,11 +67,12 @@
                 </Border>
                 <Border Grid.Column="2" Style="{StaticResource Card}">
                     <StackPanel>
-                        <TextBlock x:Name="GpuName" Text="GPU" Style="{StaticResource Caption}"/>
+                        <TextBlock x:Name="GpuName" Text="GPU" Style="{StaticResource Caption}" TextTrimming="CharacterEllipsis"/>
                         <StackPanel Orientation="Horizontal">
                             <TextBlock x:Name="GpuTemp" Text="--" Style="{StaticResource BigNumber}"/>
                             <TextBlock Text="°C" Style="{StaticResource Caption}" FontSize="14" VerticalAlignment="Top" Margin="2,7,0,0"/>
                         </StackPanel>
+                        <TextBlock x:Name="GpuNote" Text="" Style="{StaticResource Faint}" Margin="0,4,0,10" TextWrapping="Wrap" TextTrimming="None" Visibility="Collapsed"/>
                         <ui:Sparkline x:Name="GpuSpark" Height="24" Margin="0,2,0,6" Min="30" Max="80"/>
                         <TextBlock x:Name="GpuLine" Text="Load 0%" Style="{StaticResource Caption}"/>
                         <ui:BarMeter x:Name="GpuBar" Margin="0,6,0,0"/>

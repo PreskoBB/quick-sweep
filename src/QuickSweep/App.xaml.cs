@@ -23,7 +23,7 @@ public partial class App : Application
     FlyoutWindow? _flyout;
     MainWindow? _main;
     EventWaitHandle? _openEvent, _dumpEvent;
-    int _lastCpu = int.MinValue, _lastGpu = int.MinValue;
+    int _lastCpu = int.MinValue, _lastGpu = int.MinValue, _lastGpuLoad = int.MinValue;
     DateTime _lastToggle = DateTime.MinValue;
     bool _iconPending;
 
@@ -40,6 +40,7 @@ public partial class App : Application
             if (Elevation.IsTokenElevated) { Shutdown(5); return; }     // demo files must never land in the real, secured state folder
             Demo.On = true;
             Demo.Problem = e.Args.Any(a => a.StartsWith("--demo-problem")); Demo.Worse = e.Args.Contains("--demo-problem=worse");
+            Demo.AmdNoSensor = e.Args.Contains("--demo-gpu=amd");
             if (Environment.GetEnvironmentVariable("QUICKSWEEP_DATA") is not { Length: > 0 })
                 Environment.SetEnvironmentVariable("QUICKSWEEP_DATA", Path.Combine(Path.GetTempPath(), "QuickSweep-demo-" + Guid.NewGuid().ToString("N")[..8]));
         }
@@ -94,6 +95,17 @@ public partial class App : Application
                 Top = r.Items.Take(4).Select(i => $"{i.Bytes / 1048576} MB  {i.Display}  {(i.Denied != null ? "[DENIED: " + i.Denied + "]" : "")}{(i.Recent ? " [recent]" : "")}")
             });
             File.WriteAllText(cleanScan, $"elapsed {sw.Elapsed.TotalSeconds:0.0}s\n" + System.Text.Json.JsonSerializer.Serialize(lines, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            Shutdown();
+            return;
+        }
+        string? gpuProbe = args.FirstOrDefault(a => a.StartsWith("--gpu-probe="))?[12..].Trim('"');
+        if (gpuProbe != null)
+        {
+            // asks every GPU source on its own and writes what each saw (for a PC whose GPU shows "no sensor"); read-only, ordinary
+            // user only: it writes to a path the caller names, which an elevated process must never do on a caller's say-so
+            if (Elevation.IsTokenElevated) { Shutdown(5); return; }
+            try { File.WriteAllText(gpuProbe, GpuProbe.Run()); }
+            catch (Exception ex) { Log.Write("--gpu-probe failed: " + ex.Message); Shutdown(4); return; }
             Shutdown();
             return;
         }
@@ -278,10 +290,13 @@ public partial class App : Application
     void OnSampled(Telemetry t)
     {
         int c = t.CpuTemp is double ct ? (int)Math.Round(ct) : -1;
-        int g = t.Gpu is { } gp ? (int)Math.Round(gp.TempC) : -1;
-        if (c == _lastCpu && g == _lastGpu && !_iconPending) return;
-        _lastCpu = c; _lastGpu = g;
-        string tip = $"CPU {(c >= 0 ? c + " °C" : "n/a")}  ·  GPU {(g >= 0 ? g + " °C" : "n/a")}  ·  RAM {t.Mem.UsedPct:0}%";
+        int g = t.Gpu is { TempC: double gp } ? (int)Math.Round(gp) : -1;
+        // a GPU without a temperature sensor keeps "--" on the icon; its usage goes into the tooltip (updated in 5 % steps)
+        int gl = g < 0 && t.Gpu is { Load: double load } ? (int)(load / 5) : -1;
+        if (c == _lastCpu && g == _lastGpu && gl == _lastGpuLoad && !_iconPending) return;
+        _lastCpu = c; _lastGpu = g; _lastGpuLoad = gl;
+        string gpuTip = g >= 0 ? g + " °C" : t.Gpu is { Load: double lv } ? $"{lv:0}% load (no temp sensor)" : "n/a";
+        string tip = $"CPU {(c >= 0 ? c + " °C" : "n/a")}  ·  GPU {gpuTip}  ·  RAM {t.Mem.UsedPct:0}%";
         if (Mon.Mode.Active) tip += "  ·  background work slowed";
         Dispatcher.BeginInvoke(() =>
         {

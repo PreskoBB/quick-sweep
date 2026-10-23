@@ -183,17 +183,42 @@ public partial class FlyoutWindow : Window
         // GPU
         if (t.Gpu is { } g)
         {
-            T(GpuName, ShortGpu(g.Name));
-            T(GpuTemp, $"{g.TempC:0}");
-            GpuSpark.Stroke = Palette.Heat(g.TempC, 65, 75, 83);
-            GpuSpark.SetData(hist.Where(x => x.Gpu != null).Select(x => x.Gpu!.TempC).ToList());
-            T(GpuLine, $"Load {g.Load:0}%" + (g.FanPct >= 0 ? $"  ·  Fan {g.FanPct}%" : ""));
-            GpuBar.Value = g.Load / 100; GpuBar.Fill = Palette.Accent;
-            T(VramLine, $"VRAM {Palette.Bytes(g.VramUsed)} of {Palette.Bytes(g.VramTotal)}");
-            VramBar.Value = g.VramTotal == 0 ? 0 : (double)g.VramUsed / g.VramTotal;
+            T(GpuName, GpuChooser.ShortName(g.Name));
+            if (g.TempC is double gt)
+            {
+                T(GpuTemp, $"{gt:0}");
+                GpuSpark.Stroke = Palette.Heat(gt, 65, 75, 83);
+                GpuSpark.Visibility = Visibility.Visible;
+                GpuNote.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                // a GPU without a temperature sensor we can read (many AMD / Intel drivers): usage and VRAM still work
+                T(GpuTemp, "--");
+                T(GpuNote, "no sensor");
+                GpuNote.ToolTip = g.Note.Length > 0 ? g.Note : null;
+                GpuNote.Visibility = Visibility.Visible;
+                GpuSpark.Visibility = Visibility.Collapsed;
+            }
+            GpuSpark.SetData(hist.Where(x => x.Gpu?.TempC != null).Select(x => x.Gpu!.TempC!.Value).ToList());
+            string fan = g.FanPct >= 0 ? $"  ·  Fan {g.FanPct}%" : g.FanRpm > 0 ? $"  ·  Fan {g.FanRpm} rpm" : "";
+            T(GpuLine, (g.Load is double gl ? $"Load {gl:0}%" : "Load n/a") + fan);
+            GpuBar.Value = (g.Load ?? 0) / 100; GpuBar.Fill = Palette.Accent;
+            if (g.VramTotal > 0)
+            {
+                T(VramLine, $"VRAM {Palette.Bytes(g.VramUsed)} of {Palette.Bytes(g.VramTotal)}");
+                VramBar.Value = (double)g.VramUsed / g.VramTotal;
+            }
+            else if (g.VramUsed > 0) { T(VramLine, $"VRAM {Palette.Bytes(g.VramUsed)} in use"); VramBar.Value = 0; }
+            else { T(VramLine, "VRAM n/a"); VramBar.Value = 0; }
             VramBar.Fill = VramBar.Value > 0.92 ? Palette.Warn : Palette.Accent;
         }
-        else { T(GpuTemp, "--"); T(GpuLine, "No NVIDIA GPU found"); }
+        else
+        {
+            T(GpuName, "GPU"); T(GpuTemp, "--"); T(GpuLine, "No GPU found"); T(VramLine, "");
+            GpuBar.Value = 0; VramBar.Value = 0; GpuNote.Visibility = Visibility.Collapsed; GpuSpark.Visibility = Visibility.Visible;
+            GpuSpark.SetData(new List<double>());
+        }
 
         // memory
         var m = t.Mem;
@@ -227,8 +252,6 @@ public partial class FlyoutWindow : Window
         if (alerts.Count == 0) { StatusPill.Background = Palette.Frozen("#223A2A"); StatusDot.Fill = Palette.Good; T(StatusText, "All good"); }
         else { StatusPill.Background = Palette.Frozen("#4A3A16"); StatusDot.Fill = Palette.Warn; T(StatusText, alerts.Count == 1 ? "1 issue" : $"{alerts.Count} issues"); }
     }
-
-    static string ShortGpu(string n) => n.Replace("NVIDIA GeForce ", "").Replace("NVIDIA ", "");
 
     static string FormatUptime(TimeSpan u)
         => u.TotalDays >= 1 ? $"{(int)u.TotalDays} d {u.Hours} h" : $"{u.Hours} h {u.Minutes} min";

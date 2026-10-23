@@ -21,8 +21,9 @@ public sealed class SessionEntry
     public int DurationSec { get; set; }
     public double? CpuTempPeak { get; set; }
     public double? CpuTempAvg { get; set; }
-    public double GpuTempPeak { get; set; }
-    public double GpuTempAvg { get; set; }
+    /// <summary>Null (or 0 in entries saved by earlier versions without a GPU sensor) = the GPU has no temperature sensor Quick Sweep could read.</summary>
+    public double? GpuTempPeak { get; set; }
+    public double? GpuTempAvg { get; set; }
     public double CpuLoadPeak { get; set; }
     public double CpuLoadAvg { get; set; }
     public double GpuLoadPeak { get; set; }
@@ -49,9 +50,12 @@ public sealed class SessionRecorder
     public const double CpuThrottleC = 95; // package temperature at which a CPU is assumed to be throttling (most desktop CPUs limit themselves around 95 to 100 degrees)
     GameInfo? _game;
     DateTime _start;
+    /// <summary>The clock for session start and end (tests set it).</summary>
+    public Func<DateTime> Clock { get; set; } = () => DateTime.Now;
     int _n;
     double _cpuTSum; int _cpuTN; double? _cpuTMax;
     double _gpuTSum, _gpuTMax, _cpuLSum, _cpuLMax, _gpuLSum, _gpuLMax, _ramMax, _ramPctMax, _vramMax;
+    int _gpuTN, _gpuLN;
     bool _cpuThr, _gpuThr; double _gpuThrSec;
     readonly List<string> _alerts = new();
     DateTime _last;
@@ -62,9 +66,10 @@ public sealed class SessionRecorder
 
     public void Begin(GameInfo g)
     {
-        _game = g; _start = DateTime.Now; _last = _start; _n = 0;
+        _game = g; _start = Clock(); _last = _start; _n = 0;
         _cpuTSum = 0; _cpuTN = 0; _cpuTMax = null;
         _gpuTSum = _gpuTMax = _cpuLSum = _cpuLMax = _gpuLSum = _gpuLMax = _ramMax = _ramPctMax = _vramMax = 0;
+        _gpuTN = _gpuLN = 0;
         _cpuThr = _gpuThr = false; _gpuThrSec = 0;
         _alerts.Clear();
     }
@@ -85,8 +90,8 @@ public sealed class SessionRecorder
         _cpuLSum += t.CpuLoad; _cpuLMax = Math.Max(_cpuLMax, t.CpuLoad);
         if (t.Gpu is { } g)
         {
-            _gpuTSum += g.TempC; _gpuTMax = Math.Max(_gpuTMax, g.TempC);
-            _gpuLSum += g.Load; _gpuLMax = Math.Max(_gpuLMax, g.Load);
+            if (g.TempC is double gt) { _gpuTSum += gt; _gpuTN++; _gpuTMax = Math.Max(_gpuTMax, gt); }
+            if (g.Load is double gl) { _gpuLSum += gl; _gpuLN++; _gpuLMax = Math.Max(_gpuLMax, gl); }
             _vramMax = Math.Max(_vramMax, g.VramUsed / 1073741824.0);
             if (g.ThermalThrottle) { _gpuThr = true; _gpuThrSec += dt; }
         }
@@ -98,7 +103,7 @@ public sealed class SessionRecorder
     public SessionEntry? End(PingMonitor ping, int lowered, IEnumerable<string>? gameModeLog = null)
     {
         if (_game == null) return null;
-        var end = DateTime.Now;
+        var end = Clock();
         var name = _game.Name;
         _game = null;
         if ((end - _start).TotalSeconds < 60 || _n == 0) return null;
@@ -108,9 +113,9 @@ public sealed class SessionRecorder
         {
             Game = name, Start = _start, End = end, DurationSec = (int)(end - _start).TotalSeconds,
             CpuTempPeak = _cpuTMax, CpuTempAvg = _cpuTN > 0 ? Math.Round(_cpuTSum / _cpuTN, 1) : null,
-            GpuTempPeak = _gpuTMax, GpuTempAvg = Math.Round(_gpuTSum / _n, 1),
+            GpuTempPeak = _gpuTN > 0 ? _gpuTMax : null, GpuTempAvg = _gpuTN > 0 ? Math.Round(_gpuTSum / _gpuTN, 1) : null,
             CpuLoadPeak = Math.Round(_cpuLMax), CpuLoadAvg = Math.Round(_cpuLSum / _n, 1),
-            GpuLoadPeak = Math.Round(_gpuLMax), GpuLoadAvg = Math.Round(_gpuLSum / _n, 1),
+            GpuLoadPeak = Math.Round(_gpuLMax), GpuLoadAvg = _gpuLN > 0 ? Math.Round(_gpuLSum / _gpuLN, 1) : 0,
             RamPeakGb = Math.Round(_ramMax, 1), RamPeakPct = Math.Round(_ramPctMax),
             VramPeakGb = Math.Round(_vramMax, 1),
             CpuThrottled = _cpuThr, GpuThrottled = _gpuThr, GpuThrottleSec = (int)_gpuThrSec,

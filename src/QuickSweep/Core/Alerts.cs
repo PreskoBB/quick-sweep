@@ -96,9 +96,9 @@ public sealed class AlertEngine
         if (t.CpuTemp is double ct)
             Set("cpu-hot", Sustained("cpu-hot", ct > _s.CpuAlertC, 10) || (_active.ContainsKey("cpu-hot") && ct > _s.CpuAlertC - 3),
                 "CPU is running hot", $"CPU is at {ct:0} °C (alert limit {_s.CpuAlertC} °C). Check cooler, dust and case airflow.", "sessions");
-        if (t.Gpu is { } g)
-            Set("gpu-hot", Sustained("gpu-hot", g.TempC > _s.GpuAlertC, 10) || (_active.ContainsKey("gpu-hot") && g.TempC > _s.GpuAlertC - 3),
-                "GPU is running hot", $"GPU is at {g.TempC:0} °C (alert limit {_s.GpuAlertC} °C). Check fans and airflow.", "sessions");
+        if (t.Gpu is { TempC: double gt })       // a GPU without a temperature sensor can never be "hot"
+            Set("gpu-hot", Sustained("gpu-hot", gt > _s.GpuAlertC, 10) || (_active.ContainsKey("gpu-hot") && gt > _s.GpuAlertC - 3),
+                "GPU is running hot", $"GPU is at {gt:0} °C (alert limit {_s.GpuAlertC} °C). Check fans and airflow.", "sessions");
     }
 
     /// <summary>Slower checks (every ~30 s): disk space, memory growth, kernel pool.</summary>
