@@ -84,6 +84,13 @@ public static class GpuProbe
         L("  " + mon.Describe());
         if (r != null) L($"  name='{r.Name}' vendor={r.Vendor} temp={Fmt(r.TempC)} load={Fmt(r.Load)} vram={r.VramUsed / 1048576}/{r.VramTotal / 1048576} MB fan%={r.FanPct} fan_rpm={r.FanRpm}");
         else L("  no GPU found");
+        L();
+        L("DLL search hardening: " + DllHardening.Status);
+        foreach (var n in DllHardening.DrainNotes()) L("  " + n);
+        var foreign = DllHardening.ForeignModules();
+        L("Loaded DLLs outside the Windows folder, the app folder and the .NET runtime (driver files are normal here):");
+        foreach (var m in foreign) L("  " + m);
+        if (foreign.Count == 0) L("  none");
         return sb.ToString();
     }
 }

@@ -29,6 +29,8 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // DLL search hardening first (it already ran from the module initializer; this is the explicit, idempotent second call)
+        DllHardening.Apply();
         // --data=<folder> moves the state folder of a NON-elevated --dev run, before anything reads or writes settings.
         // An elevated process never honors it (or QUICKSWEEP_DATA): anything running as the user can pass an argument or set a variable.
         var dataDir = StartupArgs.DataFolder(e.Args, Elevation.IsTokenElevated, out var ignoredData);
@@ -53,6 +55,8 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += (_, ex) => Log.Write("fatal: " + ex.ExceptionObject);
 
         var args = e.Args;
+        Log.Write("dll search: " + DllHardening.Status);
+        foreach (var n in DllHardening.DrainNotes()) Log.Write(n);
         // --dev runs a second, isolated instance (own single-instance event, never relaunches the installed task)
         bool dev = args.Contains("--dev");
         if (dev) SingleInstance.EventName = @"Local\QuickSweep.Open.Dev";
